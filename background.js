@@ -8,7 +8,7 @@ const DEFAULT_SETTINGS = {
   showOriginal: true, // true=双语对照, false=仅译文(隐藏原文)
   translateIncoming: true,
   outboxButton: true, // 在输入框显示"翻译草稿"按钮
-  minLength: 3, // 低于此长度不翻译
+  minLen: 2, // 低于此长度不翻译（v0.1.1 由 minLength:3 改名并调低，旧值自动失效）
   // deepl
   deeplApiKey: "",
   deeplPlan: "free", // free | pro

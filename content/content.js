@@ -13,6 +13,7 @@
   let settings = null;
   const CACHE = new Map(); // hash(text) -> 译文
   const INFLIGHT = new Set(); // hash(text) 正在翻译
+  const RETRIED = new Set(); // 已重试过的 hash（每条最多自动重试一次）
   let scanTimer = null;
   let outboxInjected = false;
 
@@ -54,17 +55,18 @@
 
   function extractText(contentEl) {
     const clone = contentEl.cloneNode(true);
-    // 不翻译：代码块、按钮、emoji、图片、头像/提及标记等
+    // 不翻译：回复引用、代码块、按钮、emoji、图片、提及等
     clone
       .querySelectorAll(
-        'pre, code, [class*="button"], [class*="emoji"], img, svg, a[class*="mention"], [class*="actionRow"]'
+        '[class*="repliedMessage"], pre, code, [class*="button"], [class*="emoji"], img, svg, a[class*="mention"], [class*="actionRow"]'
       )
       .forEach((n) => n.remove());
     let text = (clone.textContent || "").replace(/\u00a0/g, " ").trim();
-    // 压缩空白但不破坏换行
+    // 压缩空白但不破坏换行；丢弃空行
     text = text
       .split("\n")
       .map((l) => l.replace(/\s+/g, " ").trim())
+      .filter((l) => l.length > 0)
       .join("\n")
       .replace(/\n{3,}/g, "\n\n");
     return text;
@@ -72,7 +74,8 @@
 
   function shouldTranslate(text) {
     if (!text) return false;
-    if (text.length < (settings ? settings.minLength : 3)) return false;
+    const minLen = (settings && settings.minLen) || 2;
+    if (text.length < minLen) return false;
     if (!/[\p{L}\p{N}]/u.test(text)) return false;
     if (/^\s*(?:https?:\/\/\S+|discord(?:\.gg|app)?\.com\S*)\s*$/i.test(text))
       return false;
@@ -86,38 +89,36 @@
     row.classList.toggle("dt-replace", settings.showOriginal === false);
   }
 
-  function renderTranslation(row, contentEl, translated) {
-    let inset = row.querySelector(":scope > .dt-tl, .dt-tl");
-    if (!inset || !row.contains(inset)) {
-      inset = document.createElement("div");
-      inset.className = "dt-tl";
-      if (contentEl.nextSibling) {
-        contentEl.parentNode.insertBefore(inset, contentEl.nextSibling);
-      } else {
-        contentEl.parentNode.appendChild(inset);
-      }
+  // 插入锚点：优先放在 messageContent 包装层之后（避免进入 flex 容器被挤压变形）
+  function insertInset(row, contentEl) {
+    // 清掉本行所有旧译文框（可能错位或内容过期）
+    row.querySelectorAll(".dt-tl").forEach((n) => n.remove());
+    const anchor = contentEl.closest('[class*="messageContent"]') || contentEl;
+    const inset = document.createElement("div");
+    inset.className = "dt-tl";
+    if (anchor.nextSibling) anchor.parentNode.insertBefore(inset, anchor.nextSibling);
+    else anchor.parentNode.appendChild(inset);
+    return inset;
+  }
+
+  function renderTranslation(row, contentEl, translated, rowHash) {
+    if (!translated || !translated.trim().length) {
+      const inset = insertInset(row, contentEl);
+      inset.classList.add("dt-tl-error");
+      inset.textContent = "⚠ 翻译结果为空";
+      return;
     }
-    const h = hashStr(translated);
-    if (inset.dataset.dt === h) return;
-    inset.dataset.dt = h;
+    const inset = insertInset(row, contentEl);
+    inset.dataset.dt = hashStr(translated);
     inset.dataset.tag = "译文";
     inset.textContent = translated;
-    inset.classList.remove("dt-tl-pending", "dt-tl-error");
+    if (rowHash) row.dataset.dtHash = rowHash;
     applyDisplayMode(row);
   }
 
   function ensurePending(row, contentEl) {
-    let inset = row.querySelector(".dt-tl");
-    if (!inset || !row.contains(inset)) {
-      inset = document.createElement("div");
-      inset.className = "dt-tl dt-tl-pending";
-      if (contentEl.nextSibling) {
-        contentEl.parentNode.insertBefore(inset, contentEl.nextSibling);
-      } else {
-        contentEl.parentNode.appendChild(inset);
-      }
-    }
-    inset.dataset.dt = "pending";
+    const inset = insertInset(row, contentEl);
+    inset.classList.add("dt-tl-pending");
     inset.textContent = "…";
     return inset;
   }
@@ -131,35 +132,44 @@
     const text = extractText(contentEl);
     if (!shouldTranslate(text)) return;
 
+    // 关键：以"行内当前内容"为 key。虚拟列表复用 DOM 节点渲染新消息、
+    // 或消息被编辑时，hash 变化会触发重新翻译，不再漏翻。
     const key = (contentEl.id || row.getAttribute("data-list-item-id") || "") + "|" + text;
     const hash = hashStr(key);
+    if (row.dataset.dtHash === hash && row.querySelector(".dt-tl")) return;
+
     const cached = CACHE.get(hash);
     if (cached !== undefined) {
-      renderTranslation(row, contentEl, cached);
+      renderTranslation(row, contentEl, cached, hash);
       return;
     }
     if (INFLIGHT.has(hash)) return;
     INFLIGHT.add(hash);
     ensurePending(row, contentEl);
 
-    chrome.runtime.sendMessage({ type: "TRANSLATE", text }, (r) => {
-      INFLIGHT.delete(hash);
-      if (chrome.runtime.lastError) {
-        applyDisplayMode(row);
-        return;
-      }
-      if (r && r.ok && r.text) {
-        CACHE.set(hash, r.text);
-        renderAllWithHash(hash, r.text);
-      } else {
-        const inset = row.querySelector(".dt-tl");
-        if (inset) {
-          inset.classList.remove("dt-tl-pending");
-          inset.classList.add("dt-tl-error");
-          inset.textContent = "⚠ 翻译失败" + (r && r.error ? "：请检查设置" : "");
+    const attempt = (isRetry) => {
+      chrome.runtime.sendMessage({ type: "TRANSLATE", text }, (r) => {
+        INFLIGHT.delete(hash);
+        if (chrome.runtime.lastError) return;
+        if (r && r.ok && r.text) {
+          CACHE.set(hash, r.text);
+          renderAllWithHash(hash, r.text);
+        } else if (!isRetry && !RETRIED.has(hash)) {
+          // 失败自动重试一次
+          RETRIED.add(hash);
+          setTimeout(() => attempt(true), 1200);
+        } else {
+          const inset = row.querySelector(".dt-tl");
+          if (inset && row.contains(inset)) {
+            inset.classList.remove("dt-tl-pending");
+            inset.classList.add("dt-tl-error");
+            inset.textContent =
+              "⚠ 翻译失败" + (r && r.error ? "：" + r.error : "");
+          }
         }
-      }
-    });
+      });
+    };
+    attempt(false);
   }
 
   // 翻译完成后，把结果渲染到所有当前匹配该条消息的行（兼容虚拟滚动重建）
@@ -169,7 +179,7 @@
       if (!row) return;
       const key =
         (ce.id || row.getAttribute("data-list-item-id") || "") + "|" + extractText(ce);
-      if (hashStr(key) === hash) renderTranslation(row, ce, translated);
+      if (hashStr(key) === hash) renderTranslation(row, ce, translated, hash);
     });
   }
 
@@ -179,10 +189,7 @@
     scanTimer = null;
     if (!settings || !settings.enabled || !settings.translateIncoming) return;
     document.querySelectorAll(MESSAGE_SELECTOR).forEach((row) => {
-      if (!row.__dtScanned) {
-        row.__dtScanned = true;
-        processRow(row);
-      }
+      processRow(row);
     });
   }
 
@@ -212,7 +219,7 @@
   /* ---------- 输入框草稿翻译 ---------- */
 
   function findTextbox() {
-    return document.querySelector('[role="textbox"][contenteditable="true"]');
+    return document.querySelector('div[role="textbox"][contenteditable="true"]');
   }
 
   async function translateDraft(btn) {
@@ -224,8 +231,12 @@
     try {
       const r = await chrome.runtime.sendMessage({ type: "TRANSLATE", text: raw });
       if (r && r.ok && r.text) {
-        tb.innerText = r.text;
-        toast("已填入译文，确认后发送");
+        tb.focus();
+        // execCommand 会触发 input 事件，Discord(slate/React) 才能把新文本同步进发送状态
+        let ok = document.execCommand("selectAll", false, null);
+        ok = document.execCommand("insertText", false, r.text) && ok;
+        if (!ok) tb.innerText = r.text; // 兜底
+        toast("已替换为译文，确认后发送");
       } else {
         toast("翻译失败：" + (r && r.error ? r.error : "未知错误"), true);
       }
@@ -236,40 +247,64 @@
     }
   }
 
+  let outboxKeybound = false;
+  let outboxProbeStarted = false;
+
   function injectOutboxButton() {
-    if (outboxInjected || !settings || !settings.outboxButton) return;
-    const area =
-      document.querySelector('form[class*="chat"] [class*="channelTextArea"]') ||
-      document.querySelector('[class*="channelTextArea"]');
-    if (!area) return;
+    if (!settings || !settings.outboxButton) return;
+    if (document.querySelector(".dt-outbox-btn")) {
+      outboxInjected = true;
+      return;
+    }
+    // 锚定输入框本身（最稳定的选择器），宿主优先 channelTextArea，否则用 textbox 祖先
+    const tb = findTextbox();
+    if (!tb) return;
+    const host =
+      tb.closest('[class*="channelTextArea"]') ||
+      (tb.parentElement && tb.parentElement.parentElement) ||
+      tb.parentElement;
+    if (!host) return;
+    host.classList.add("dt-composer-host");
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "dt-outbox-btn";
     btn.title = "翻译输入框内容为目标语言（快捷键 Alt+T）";
     btn.textContent = "🌐";
     btn.addEventListener("click", () => translateDraft(btn));
-    area.appendChild(btn);
+    host.appendChild(btn);
     outboxInjected = true;
 
-    document.addEventListener("keydown", (e) => {
-      if (
-        e.altKey &&
-        !e.ctrlKey &&
-        !e.metaKey &&
-        (e.key === "t" || e.key === "T") &&
-        e.target &&
-        e.target.isContentEditable
-      ) {
-        e.preventDefault();
-        translateDraft(document.querySelector(".dt-outbox-btn"));
-      }
-    });
+    // 快捷键只注册一次（频道切换重注入时不能叠加监听器）
+    if (!outboxKeybound) {
+      outboxKeybound = true;
+      document.addEventListener("keydown", (e) => {
+        if (
+          e.altKey &&
+          !e.ctrlKey &&
+          !e.metaKey &&
+          (e.key === "t" || e.key === "T") &&
+          e.target &&
+          e.target.isContentEditable
+        ) {
+          e.preventDefault();
+          translateDraft(document.querySelector(".dt-outbox-btn"));
+        }
+      });
+    }
   }
 
+  // 自愈式探测：频道切换/重渲染导致按钮随宿主被移除时，自动补回
   function startOutboxRetry() {
+    if (outboxProbeStarted) return;
+    outboxProbeStarted = true;
     const probe = () => {
-      if (!outboxInjected) injectOutboxButton();
-      if (!outboxInjected && settings && settings.outboxButton) setTimeout(probe, 1200);
+      try {
+        if (settings && settings.outboxButton && !document.querySelector(".dt-outbox-btn")) {
+          outboxInjected = false;
+          injectOutboxButton();
+        }
+      } catch (_) {}
+      setTimeout(probe, 1500);
     };
     probe();
   }
