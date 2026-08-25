@@ -279,10 +279,9 @@
     sel.addRange(range);
   }
 
-  function replaceComposerText(tb, text) {
-    tb.focus();
-    selectAllInComposer(tb);
-    // 走 paste 事件路径：Slate/React 以"用户输入"方式同步内部状态，编辑器保持可编辑
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  function pasteIntoComposer(tb, text) {
     try {
       const dt = new DataTransfer();
       dt.setData("text/plain", text);
@@ -293,18 +292,37 @@
           clipboardData: dt
         })
       );
+      return true;
     } catch (_) {
+      return false;
+    }
+  }
+
+  async function replaceComposerText(tb, raw, text) {
+    tb.focus();
+    // 第 1 步：选中全部 → 等一拍让 selectionchange 派发、Slate 同步内部选区 → paste 替换
+    selectAllInComposer(tb);
+    await sleep(0);
+    if (!pasteIntoComposer(tb, text)) {
       selectAllInComposer(tb);
       document.execCommand("insertText", false, text);
       return;
     }
-    // Slate 渲染是异步的：稍后校验是否真的替换成功
-    setTimeout(() => {
-      const now = tb.innerText || "";
-      if (!now.includes(text.slice(0, Math.min(20, text.length)))) {
-        toast("自动替换未生效，译文已复制到剪贴板，请 Ctrl+V 粘贴", true);
-      }
-    }, 80);
+    // 校验：应为纯译文（含译文开头、不再含原文开头）
+    await sleep(80);
+    const now = (tb.innerText || "").trim();
+    const textHead = text.slice(0, Math.min(20, text.length));
+    const rawHead = raw.slice(0, Math.min(15, raw.length));
+    if (now.includes(textHead) && !now.includes(rawHead)) return;
+
+    // 第 2 步（降级）：显式"全选 → 删除 → 粘贴"，确保只剩译文
+    selectAllInComposer(tb);
+    await sleep(0);
+    document.execCommand("delete");
+    await sleep(0);
+    if (!pasteIntoComposer(tb, text)) {
+      document.execCommand("insertText", false, text);
+    }
   }
 
   async function translateDraft(btn) {
@@ -321,7 +339,7 @@
       });
       if (r && r.ok && r.text) {
         await copyText(r.text); // 静默安全网：万一替换失败可直接 Ctrl+V
-        replaceComposerText(tb, r.text);
+        await replaceComposerText(tb, raw, r.text);
         toast("✓ 输入框已替换为译文，可继续编辑后发送");
       } else {
         toast("翻译失败：" + (r && r.error ? r.error : "未知错误"), true);
