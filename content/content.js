@@ -9,6 +9,7 @@
   const MESSAGE_SELECTOR =
     '[data-list-item-id^="chat-messages-"], [id^="chat-messages-"]';
   const CONTENT_SELECTOR = '[id^="message-content-"]';
+  const REPLY_CONTAINER = '[class*="repliedMessage"]';
 
   let settings = null;
   const CACHE = new Map(); // hash(text) -> 译文
@@ -52,6 +53,17 @@
   }
 
   /* ---------- 消息提取 ---------- */
+
+  // 关键：回复引用条里的预览元素 id 也是 "message-content-<被引消息id>"
+  // （class 含 repliedTextContent），且在 DOM 中排在正文之前。
+  // 必须排除所有位于 repliedMessage 容器内的匹配，否则译文会插进引用条。
+  function findMainContent(root) {
+    const list = root.querySelectorAll(CONTENT_SELECTOR);
+    for (const el of list) {
+      if (!el.closest(REPLY_CONTAINER)) return el;
+    }
+    return null;
+  }
 
   function extractText(contentEl) {
     const clone = contentEl.cloneNode(true);
@@ -127,8 +139,8 @@
 
   function processRow(row) {
     if (!settings || !settings.enabled || !settings.translateIncoming) return;
-    const contentEl = row.querySelector(CONTENT_SELECTOR);
-    if (!contentEl) return; // 系统消息等无正文
+    const contentEl = findMainContent(row);
+    if (!contentEl) return; // 系统消息/纯引用等无正文
     const text = extractText(contentEl);
     if (!shouldTranslate(text)) return;
 
@@ -175,6 +187,7 @@
   // 翻译完成后，把结果渲染到所有当前匹配该条消息的行（兼容虚拟滚动重建）
   function renderAllWithHash(hash, translated) {
     document.querySelectorAll(CONTENT_SELECTOR).forEach((ce) => {
+      if (ce.closest(REPLY_CONTAINER)) return; // 跳过回复引用条内的预览元素
       const row = ce.closest(MESSAGE_SELECTOR);
       if (!row) return;
       const key =
