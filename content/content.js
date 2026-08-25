@@ -22,6 +22,45 @@
   let obs = null;
   let scanIntervalId = null;
 
+  /* ---------- 缓存持久化（storage.local，防抖合并写） ---------- */
+
+  const PERSIST_KEY = "dtCacheV1";
+  const CACHE_MAX = 3000;
+  const REPLY_CACHE_MAX = 1000;
+  let persistTimer = null;
+
+  function schedulePersist() {
+    if (persistTimer) return;
+    persistTimer = setTimeout(persistNow, 500);
+  }
+
+  function persistNow() {
+    persistTimer = null;
+    try {
+      const obj = {};
+      let n = 0;
+      for (const [k, v] of CACHE) {
+        obj[k] = v;
+        if (++n >= CACHE_MAX) break;
+      }
+      for (const [k, v] of REPLY_CACHE) obj["r:" + k] = v;
+      chrome.storage.local.set({ [PERSIST_KEY]: obj }, () => {
+        void chrome.runtime.lastError; // 写失败静默（缓存非关键数据）
+      });
+    } catch (_) {}
+  }
+
+  async function loadPersistedCache() {
+    try {
+      const o = await chrome.storage.local.get(PERSIST_KEY);
+      const obj = o[PERSIST_KEY] || {};
+      for (const [k, v] of Object.entries(obj)) {
+        if (k.startsWith("r:")) REPLY_CACHE.set(k.slice(2), v);
+        else CACHE.set(k, v);
+      }
+    } catch (_) {}
+  }
+
   /* ---------- 工具 ---------- */
 
   // 扩展被重载（开发者模式点刷新/自动更新）后，旧页面上残留的
@@ -292,7 +331,13 @@
     // 记录 消息id -> 译文：引用条预览与正文共用同一消息 id，
     // 仅译文模式下引用条可据此替换为译文
     const mid = (contentEl.id || "").replace("message-content-", "");
-    if (mid) REPLY_CACHE.set(mid, translated);
+    if (mid) {
+      REPLY_CACHE.set(mid, translated);
+      if (REPLY_CACHE.size > REPLY_CACHE_MAX) {
+        REPLY_CACHE.delete(REPLY_CACHE.keys().next().value);
+      }
+      schedulePersist();
+    }
     applyDisplayMode(row, true);
   }
 
@@ -346,6 +391,10 @@
         // 翻译结果无条件入缓存；渲染仅在非 burst 期执行，
         // burst 中的积压译文由窗口结束后的 scan 统一渲染
         CACHE.set(hash, r.text);
+        if (CACHE.size > CACHE_MAX) {
+          CACHE.delete(CACHE.keys().next().value);
+        }
+        schedulePersist();
         if (!burstInProgress()) {
           renderAllWithHash(hash, r.text, contentEl.id);
         }
@@ -777,6 +826,7 @@
   (async function init() {
     await getSettings();
     if (ctxDead) return;
+    await loadPersistedCache();
     startObserver();
     applySettingsAll();
     scan();
