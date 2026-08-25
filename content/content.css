@@ -39,6 +39,21 @@
   border-left-color: var(--status-danger, #f23f42);
 }
 
+/* 译文内回插的原代码块：保留 Discord 原样式，防溢出 */
+.dt-tl pre,
+.dt-tl code {
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre;
+  text-indent: 0;
+}
+.dt-tl pre {
+  margin: 4px 0;
+  padding: 8px;
+  border-radius: 4px;
+  background: var(--background-secondary, #2b2d31);
+}
+
 /* 仅译文模式：原文不占位（display:none），译文上移贴紧消息头部。
    仅应用于已成功渲染译文的行（JS 控制），翻译中/失败的行始终显示原文 */
 .dt-replace [id^="message-content-"] {

@@ -66,12 +66,26 @@
     return null;
   }
 
-  function extractText(contentEl) {
+  // 提取正文文本 + 代码块。代码块不参与翻译（翻译引擎会破坏代码），
+  // 以占位符 [[DTn]] 参与翻译保持位置，渲染时替换回原代码块 DOM 克隆。
+  function extractContent(contentEl) {
     const clone = contentEl.cloneNode(true);
-    // 不翻译：回复引用、代码块、按钮、emoji、图片、提及等
+    clone
+      .querySelectorAll('[class*="repliedMessage"]')
+      .forEach((n) => n.remove());
+    // 代码块 → 占位符（pre 内嵌套的 code 跳过，避免重复占位）
+    const codes = [];
+    clone.querySelectorAll("pre, code").forEach((n) => {
+      if (n.tagName === "CODE" && n.closest("pre")) return;
+      const ph = document.createElement("span");
+      ph.textContent = "[[DT" + codes.length + "]]";
+      n.replaceWith(ph);
+      codes.push(n);
+    });
+    // 不翻译：按钮、emoji、图片、提及等
     clone
       .querySelectorAll(
-        '[class*="repliedMessage"], pre, code, [class*="button"], [class*="emoji"], img, svg, a[class*="mention"], [class*="actionRow"]'
+        '[class*="button"], [class*="emoji"], img, svg, a[class*="mention"], [class*="actionRow"]'
       )
       .forEach((n) => n.remove());
     let text = (clone.textContent || "").replace(/\u00a0/g, " ").trim();
@@ -82,7 +96,7 @@
       .filter((l) => l.length > 0)
       .join("\n")
       .replace(/\n{3,}/g, "\n\n");
-    return text;
+    return { text, codes };
   }
 
   function shouldTranslate(text) {
@@ -119,7 +133,36 @@
     return inset;
   }
 
-  function renderTranslation(row, contentEl, translated, rowHash, rawText) {
+  // 译文写入 inset：按占位符位置插回原代码块 DOM 克隆（保留高亮/格式）；
+  // 占位符被翻译引擎改坏时，未放置的代码块追加到译文末尾
+  function renderTranslatedInto(inset, translated, codes) {
+    inset.textContent = "";
+    const re = /\[\[\s*DT(\d+)\s*\]\]/gi;
+    const placed = new Set();
+    let lastIdx = 0;
+    let m;
+    while ((m = re.exec(translated)) !== null) {
+      if (m.index > lastIdx) {
+        inset.appendChild(
+          document.createTextNode(translated.slice(lastIdx, m.index))
+        );
+      }
+      const idx = parseInt(m[1], 10);
+      if (codes[idx]) {
+        inset.appendChild(codes[idx].cloneNode(true));
+        placed.add(idx);
+      }
+      lastIdx = m.index + m[0].length;
+    }
+    if (lastIdx < translated.length) {
+      inset.appendChild(document.createTextNode(translated.slice(lastIdx)));
+    }
+    codes.forEach((c, i) => {
+      if (!placed.has(i)) inset.appendChild(c.cloneNode(true));
+    });
+  }
+
+  function renderTranslation(row, contentEl, translated, rowHash, rawText, codes) {
     if (!translated || !translated.trim().length) {
       const inset = insertInset(row, contentEl);
       inset.classList.add("dt-tl-error");
@@ -130,8 +173,11 @@
     const inset = insertInset(row, contentEl);
     inset.dataset.dt = hashStr(translated);
     inset.dataset.tag = "译文";
-    inset.textContent = translated;
-    if (rawText) inset.title = "原文：" + rawText;
+    renderTranslatedInto(inset, translated, codes || []);
+    if (rawText) {
+      inset.title =
+        "原文：" + rawText.replace(/\[\[\s*DT\d+\s*\]\]/gi, "〔代码〕");
+    }
     if (rowHash) row.dataset.dtHash = rowHash;
     // 记录 消息id -> 译文：引用条预览与正文共用同一消息 id，
     // 仅译文模式下引用条可据此替换为译文
@@ -154,7 +200,7 @@
     if (!settings || !settings.enabled || !settings.translateIncoming) return;
     const contentEl = findMainContent(row);
     if (!contentEl) return; // 系统消息/纯引用等无正文
-    const text = extractText(contentEl);
+    const { text, codes } = extractContent(contentEl);
     if (!shouldTranslate(text)) return;
 
     // 关键：以"行内当前内容"为 key。虚拟列表复用 DOM 节点渲染新消息、
@@ -165,7 +211,7 @@
 
     const cached = CACHE.get(hash);
     if (cached !== undefined) {
-      renderTranslation(row, contentEl, cached, hash, text);
+      renderTranslation(row, contentEl, cached, hash, text, codes);
       return;
     }
     if (INFLIGHT.has(hash)) return;
@@ -204,32 +250,72 @@
       if (ce.closest(REPLY_CONTAINER)) return; // 跳过回复引用条内的预览元素
       const row = ce.closest(MESSAGE_SELECTOR);
       if (!row) return;
+      const { text: ceText, codes: ceCodes } = extractContent(ce);
       const key =
-        (ce.id || row.getAttribute("data-list-item-id") || "") + "|" + extractText(ce);
-      if (hashStr(key) === hash) renderTranslation(row, ce, translated, hash, extractText(ce));
+        (ce.id || row.getAttribute("data-list-item-id") || "") + "|" + ceText;
+      if (hashStr(key) === hash)
+        renderTranslation(row, ce, translated, hash, ceText, ceCodes);
     });
   }
 
-  // 仅译文模式：引用条预览替换为被引消息的译文（若已翻译过）；
-  // 双语模式或无译文缓存时恢复原文
+  // 仅译文模式：引用条预览替换为被引消息的译文。
+  // 有缓存（正文翻译过）→ 直接替换；无缓存 → 按需单独翻译该引用条。
+  // 双语模式或翻译失败时恢复原文。
+  const REPLY_INFLIGHT = new Set(); // 消息id：引用条翻译进行中
+  const REPLY_FAILED = new Set(); // 消息id：按需翻译失败（不自动重试）
+
+  function restoreReplyBar(el) {
+    if (el.dataset.dtOriginal) {
+      el.textContent = el.dataset.dtOriginal;
+      el.removeAttribute("title");
+      delete el.dataset.dtOriginal;
+    }
+  }
+
+  function requestReplyTranslation(el) {
+    const mid = (el.id || "").replace("message-content-", "");
+    if (!mid) return;
+    if (REPLY_CACHE.has(mid) || REPLY_INFLIGHT.has(mid) || REPLY_FAILED.has(mid))
+      return;
+    const text = (el.textContent || "").trim();
+    if (!shouldTranslate(text)) return;
+    REPLY_INFLIGHT.add(mid);
+    chrome.runtime.sendMessage(
+      { type: "TRANSLATE", text, targetLang: settings && settings.targetLang },
+      (r) => {
+        REPLY_INFLIGHT.delete(mid);
+        if (chrome.runtime.lastError) return;
+        if (r && r.ok && r.text) {
+          REPLY_CACHE.set(mid, r.text);
+          applyReplyTranslations();
+        } else {
+          REPLY_FAILED.add(mid);
+        }
+      }
+    );
+  }
+
   function applyReplyTranslations() {
     const replaceMode =
       settings && settings.enabled && settings.showOriginal === false;
     document
       .querySelectorAll('[class*="repliedMessage"] [id^="message-content-"]')
       .forEach((el) => {
+        if (!replaceMode) {
+          restoreReplyBar(el);
+          return;
+        }
         const mid = (el.id || "").replace("message-content-", "");
-        const translated = replaceMode ? REPLY_CACHE.get(mid) : undefined;
+        const translated = mid ? REPLY_CACHE.get(mid) : undefined;
         if (translated) {
           if (!el.dataset.dtOriginal) el.dataset.dtOriginal = el.textContent;
           if (el.textContent !== translated) {
             el.textContent = translated;
             el.title = "原文：" + el.dataset.dtOriginal;
           }
-        } else if (el.dataset.dtOriginal) {
-          el.textContent = el.dataset.dtOriginal;
-          el.removeAttribute("title");
-          delete el.dataset.dtOriginal;
+        } else {
+          restoreReplyBar(el);
+          if (mid && !REPLY_FAILED.has(mid)) requestReplyTranslation(el);
         }
       });
   }
