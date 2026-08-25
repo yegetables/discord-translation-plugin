@@ -235,50 +235,6 @@
     return document.querySelector('div[role="textbox"][contenteditable="true"]');
   }
 
-  async function copyText(t) {
-    try {
-      await navigator.clipboard.writeText(t);
-      return true;
-    } catch (_) {}
-    // 兜底：隐藏 textarea + execCommand
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = t;
-      ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
-      document.body.appendChild(ta);
-      ta.select();
-      const ok = document.execCommand("copy");
-      ta.remove();
-      return ok;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  function selectAllInComposer(tb) {
-    // 精确选中 Slate 首个→最后一个非空文本节点（避开零宽占位节点）
-    const sel = window.getSelection();
-    const range = document.createRange();
-    const walker = document.createTreeWalker(tb, NodeFilter.SHOW_TEXT);
-    let first = null,
-      last = null,
-      n;
-    while ((n = walker.nextNode())) {
-      if (n.textContent && n.textContent.trim().length) {
-        if (!first) first = n;
-        last = n;
-      }
-    }
-    if (first && last) {
-      range.setStart(first, 0);
-      range.setEnd(last, last.textContent.length);
-    } else {
-      range.selectNodeContents(tb);
-    }
-    sel.removeAllRanges();
-    sel.addRange(range);
-  }
-
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // 从 React fiber 定位 Discord 的 Slate editor 实例
@@ -327,23 +283,6 @@
     return true;
   }
 
-  function pasteIntoComposer(tb, text) {
-    try {
-      const dt = new DataTransfer();
-      dt.setData("text/plain", text);
-      tb.dispatchEvent(
-        new ClipboardEvent("paste", {
-          bubbles: true,
-          cancelable: true,
-          clipboardData: dt
-        })
-      );
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
   function composerText(tb) {
     return (tb.innerText || tb.textContent || "").trim();
   }
@@ -355,42 +294,9 @@
     return now.includes(textHead) && !now.includes(rawHead);
   }
 
-  // 轮询等待 Discord 的异步 paste 管道完成（最多 timeoutMs）
-  async function waitForComposerPure(tb, raw, text, timeoutMs = 600) {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      await sleep(50);
-      if (composerIsPure(tb, raw, text)) return true;
-    }
-    return false;
-  }
-
-  async function replaceComposerText(tb, raw, text) {
-    tb.focus();
-    // 首选：Slate 原生 API（人工验证过的安全通道）。
-    // 一旦进入 Slate 层，失败也不混用 DOM hack（避免状态雪崩）。
-    const editor = findSlateEditor(tb);
-    if (editor) {
-      try {
-        if (slateReplaceAll(editor, text)) {
-          await sleep(60);
-          return { ok: composerIsPure(tb, raw, text) };
-        }
-        return { ok: false };
-      } catch (_) {
-        return { ok: false };
-      }
-    }
-    // 降级（仅 editor 定位失败时）：paste 路径 + 轮询
-    selectAllInComposer(tb);
-    await sleep(0);
-    if (!pasteIntoComposer(tb, text)) return { ok: false };
-    return { ok: await waitForComposerPure(tb, raw, text) };
-  }
-
   async function translateDraft(btn) {
     const tb = findTextbox();
-    if (!tb) return toast("未找到输入框", true);
+    if (!tb) return toast("未找到 Discord 输入框", true);
     const raw = composerText(tb);
     if (!raw) return toast("输入框是空的", true);
     if (btn) btn.classList.add("dt-busy");
@@ -400,16 +306,30 @@
         text: raw,
         targetLang: settings && settings.outboxTargetLang
       });
-      if (r && r.ok && r.text) {
-        await copyText(r.text); // 静默安全网：万一替换失败可直接 Ctrl+V
-        const res = await replaceComposerText(tb, raw, r.text);
-        if (res.ok) toast("✓ 输入框已替换为译文，可继续编辑后发送");
-        else toast("自动替换结果异常，请检查输入框（译文已复制剪贴板）", true);
-      } else {
-        toast("翻译失败：" + (r && r.error ? r.error : "未知错误"), true);
+      if (!(r && r.ok && r.text)) {
+        return toast("翻译失败：" + ((r && r.error) || "未知错误"), true);
       }
+
+      const editor = findSlateEditor(tb);
+      if (!editor) {
+        return toast(
+          "替换失败：未定位到 Discord 编辑器实例（界面结构可能已更新，请反馈）",
+          true
+        );
+      }
+      try {
+        slateReplaceAll(editor, r.text);
+      } catch (e) {
+        return toast("Slate 替换失败：" + ((e && e.message) || e), true);
+      }
+
+      await sleep(60);
+      if (!composerIsPure(tb, raw, r.text)) {
+        return toast("替换后校验未通过，请检查输入框内容", true);
+      }
+      toast("✓ 已替换为译文，可继续编辑后发送");
     } catch (e) {
-      toast("翻译失败：" + e.message, true);
+      toast("翻译失败：" + ((e && e.message) || e), true);
     } finally {
       if (btn) btn.classList.remove("dt-busy");
     }
