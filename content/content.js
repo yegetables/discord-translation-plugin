@@ -264,6 +264,60 @@
 
   /* ---------- 单条消息处理 ---------- */
 
+  // 翻译并发上限 + FIFO 队列：跳转/批量加载时避免请求风暴
+  // （Google 限流、本地 LLM 过载），也避免逐条完成的 DOM 持续扰动
+  const MAX_CONCURRENT = 4;
+  const JOB_QUEUE = new Map(); // hash -> job
+  let activeJobs = 0;
+
+  function startJob(job) {
+    const { row, contentEl, text, codes, hash } = job;
+    activeJobs++;
+    INFLIGHT.add(hash);
+    ensurePending(row, contentEl);
+
+    const attempt = (isRetry) => {
+      chrome.runtime.sendMessage({ type: "TRANSLATE", text }, (r) => {
+        INFLIGHT.delete(hash);
+        activeJobs--;
+        if (chrome.runtime.lastError) {
+          pumpQueue();
+          return;
+        }
+        if (r && r.ok && r.text) {
+          CACHE.set(hash, r.text);
+          renderAllWithHash(hash, r.text, contentEl.id);
+        } else if (!isRetry && !RETRIED.has(hash)) {
+          // 失败自动重试一次（重新排队）
+          RETRIED.add(hash);
+          setTimeout(() => {
+            QUEUE.set(hash, job);
+            pumpQueue();
+          }, 1200);
+        } else {
+          const inset = row.querySelector(".dt-tl");
+          if (inset && row.contains(inset)) {
+            inset.classList.remove("dt-tl-pending");
+            inset.classList.add("dt-tl-error");
+            inset.textContent =
+              "⚠ 翻译失败" + (r && r.error ? "：" + r.error : "");
+          }
+          applyDisplayMode(row, false); // 失败时必须显示原文
+          pumpQueue();
+        }
+      });
+    };
+    attempt(false);
+  }
+
+  function pumpQueue() {
+    for (const [hash, job] of JOB_QUEUE) {
+      if (activeJobs >= MAX_CONCURRENT) break;
+      JOB_QUEUE.delete(hash);
+      startJob(job);
+    }
+  }
+
   function processRow(row) {
     if (!settings || !settings.enabled || !settings.translateIncoming) return;
     const contentEl = findMainContent(row);
@@ -293,39 +347,22 @@
       return;
     }
     if (INFLIGHT.has(hash)) return;
-    INFLIGHT.add(hash);
-    ensurePending(row, contentEl);
-
-    const attempt = (isRetry) => {
-      chrome.runtime.sendMessage({ type: "TRANSLATE", text }, (r) => {
-        INFLIGHT.delete(hash);
-        if (chrome.runtime.lastError) return;
-        if (r && r.ok && r.text) {
-          CACHE.set(hash, r.text);
-          renderAllWithHash(hash, r.text);
-        } else if (!isRetry && !RETRIED.has(hash)) {
-          // 失败自动重试一次
-          RETRIED.add(hash);
-          setTimeout(() => attempt(true), 1200);
-        } else {
-          const inset = row.querySelector(".dt-tl");
-          if (inset && row.contains(inset)) {
-            inset.classList.remove("dt-tl-pending");
-            inset.classList.add("dt-tl-error");
-            inset.textContent =
-              "⚠ 翻译失败" + (r && r.error ? "：" + r.error : "");
-          }
-          applyDisplayMode(row, false); // 失败时必须显示原文
-        }
-      });
-    };
-    attempt(false);
+    const job = { row, contentEl, text, codes, hash };
+    if (activeJobs >= MAX_CONCURRENT) {
+      JOB_QUEUE.set(hash, job); // 排队，完成回调/scan 驱动
+      return;
+    }
+    startJob(job);
   }
 
-  // 翻译完成后，把结果渲染到所有当前匹配该条消息的行（兼容虚拟滚动重建）
-  function renderAllWithHash(hash, translated) {
+  // 翻译完成后，把结果渲染到所有当前匹配该条消息的行（兼容虚拟滚动重建）。
+  // 按消息 id 精确定位，避免批量加载后全表提取的开销
+  function renderAllWithHash(hash, translated, contentElId) {
     const useRaw = settings && settings.provider === "openai-compatible";
-    document.querySelectorAll(CONTENT_SELECTOR).forEach((ce) => {
+    const targets = contentElId
+      ? document.querySelectorAll('[id="' + contentElId + '"]')
+      : document.querySelectorAll(CONTENT_SELECTOR);
+    targets.forEach((ce) => {
       if (ce.closest(REPLY_CONTAINER)) return; // 跳过回复引用条内的预览元素
       const row = ce.closest(MESSAGE_SELECTOR);
       if (!row) return;
@@ -416,34 +453,64 @@
 
   /* ---------- 扫描 & 观察者 ---------- */
 
+  // 批量加载检测：跳转旧消息/快速滚动时 Discord 会在 2 秒窗口内插入大量行，
+  // 此时虚拟列表正在测量定位，我们的插入/隐藏会与其竞争导致界面错乱。
+  // 检测到批量插入就完全暂停处理，等窗口静默后再一次性翻译。
+  const BURST_THRESHOLD = 15;
+  const BURST_WINDOW_MS = 2000;
+  let burstCount = 0;
+  let burstTimer = null;
+
+  function noteBurst(n) {
+    burstCount += n;
+    if (burstTimer) clearTimeout(burstTimer);
+    burstTimer = setTimeout(() => {
+      burstCount = 0;
+      burstTimer = null;
+    }, BURST_WINDOW_MS);
+  }
+
+  function burstInProgress() {
+    return burstCount > BURST_THRESHOLD;
+  }
+
   function scan() {
     scanTimer = null;
     if (!settings || !settings.enabled || !settings.translateIncoming) return;
+    if (burstInProgress()) {
+      scheduleScan(1200); // 加载风暴中：推迟，零干扰
+      return;
+    }
     document.querySelectorAll(MESSAGE_SELECTOR).forEach((row) => {
       processRow(row);
     });
     applyReplyTranslations();
+    pumpQueue();
   }
 
-  function scheduleScan() {
+  function scheduleScan(delay = 150) {
     if (scanTimer) return;
-    scanTimer = setTimeout(scan, 150);
+    scanTimer = setTimeout(scan, delay);
   }
 
   function startObserver() {
     const obs = new MutationObserver((muts) => {
+      let addedRows = 0;
+      let interesting = false;
       for (const m of muts) {
-        if (m.type === "childList" || m.type === "characterData") {
-          const t = m.target;
-          if (
-            t.closest &&
-            (t.closest(MESSAGE_SELECTOR) || t.nodeType === 3 || t.nodeType === 1)
-          ) {
-            scheduleScan();
-            break;
+        if (m.type === "childList") {
+          for (const n of m.addedNodes) {
+            if (n.nodeType !== 1) continue;
+            if (n.matches && n.matches(MESSAGE_SELECTOR)) addedRows++;
+            else if (n.querySelector && n.querySelector(MESSAGE_SELECTOR)) addedRows++;
+            interesting = true;
           }
+        } else if (m.type === "characterData") {
+          interesting = true;
         }
       }
+      if (addedRows) noteBurst(addedRows);
+      if (interesting) scheduleScan();
     });
     obs.observe(document.body, { childList: true, subtree: true, characterData: true });
   }
