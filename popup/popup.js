@@ -55,6 +55,13 @@ function showProviderCfg() {
   }
 }
 
+// 并发输入框 placeholder：显示当前后端的自动推荐值
+function updateConcurrencyPlaceholder() {
+  const rec = { "google-web": 4, "deepl": 4, "openai-compatible": 16 };
+  const v = rec[state.provider || "google-web"] || 4;
+  $("maxConcurrent").placeholder = `留空 = 自动（当前后端推荐 ${v}）`;
+}
+
 /* ---- 提示词方案 ---- */
 function fillPromptProfiles() {
   if (!Array.isArray(state.promptProfiles) || !state.promptProfiles.length) {
@@ -104,22 +111,21 @@ function bind() {
   });
   $("provider").addEventListener("change", (e) => {
     state.provider = e.target.value;
-    // 并发默认跟随服务类型：各后端独立记忆，手动设置过的值保存不丢
-    const rec = { "google-web": 4, "deepl": 4, "openai-compatible": 16 };
-    const byP = state.maxConcurrentByProvider || {};
-    const v = byP[e.target.value] ?? rec[e.target.value] ?? 4;
-    state.maxConcurrent = v;
-    $("maxConcurrent").value = v;
+    updateConcurrencyPlaceholder();
     showProviderCfg();
     markDirty();
   });
   $("maxConcurrent").addEventListener("input", (e) => {
-    let v = parseInt(e.target.value, 10);
-    if (isNaN(v)) return;
-    v = Math.max(1, Math.min(32, v));
-    state.maxConcurrent = v;
-    if (!state.maxConcurrentByProvider) state.maxConcurrentByProvider = {};
-    state.maxConcurrentByProvider[state.provider || "google-web"] = v;
+    const raw = e.target.value.trim();
+    if (raw === "") {
+      state.maxConcurrent = ""; // 留空 = 自动跟随当前后端推荐
+    } else {
+      let v = parseInt(raw, 10);
+      if (isNaN(v)) return;
+      v = Math.max(1, Math.min(32, v));
+      state.maxConcurrent = v;
+      e.target.value = String(v);
+    }
     markDirty();
   });
   document.querySelectorAll('input[name="showOriginal"]').forEach((r) => {
@@ -257,7 +263,8 @@ function renderAll() {
   $("sw-enabled").checked = !!state.enabled;
   $("targetLang").value = state.targetLang || DEFAULT_TARGET;
   $("outboxTargetLang").value = state.outboxTargetLang || "en";
-  $("maxConcurrent").value = state.maxConcurrent || 4;
+  $("maxConcurrent").value = state.maxConcurrent ?? "";
+  updateConcurrencyPlaceholder();
   const ro = state.showOriginal !== false ? "1" : "0";
   document.querySelector(`input[name="showOriginal"][value="${ro}"]`).checked = true;
   $("chk-incoming").checked = !!state.translateIncoming;

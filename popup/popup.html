@@ -37,8 +37,8 @@
           </div>
         </div>
         <div class="row">
-          <label for="maxConcurrent">翻译并发上限（在线服务建议 2-4，本地 LLM 建议 8-16）</label>
-          <input type="number" id="maxConcurrent" min="1" max="32" step="1" />
+          <label for="maxConcurrent">翻译并发上限（留空 = 自动按后端推荐：在线 4 / 本地 LLM 16）</label>
+          <input type="number" id="maxConcurrent" min="1" max="32" step="1" placeholder="自动" />
         </div>
         <div class="row">
           <label for="outboxTargetLang">发送框草稿翻译为</label>

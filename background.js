@@ -11,8 +11,7 @@ const DEFAULT_SETTINGS = {
   outboxButton: true, // 在输入框显示"翻译草稿"按钮
   outboxTargetLang: "en", // 发送框草稿翻译的目标语言（与接收翻译的 targetLang 相互独立）
   minLen: 2, // 低于此长度不翻译（v0.1.1 由 minLength:3 改名并调低，旧值自动失效）
-  maxConcurrent: 4, // 当前生效的翻译并发上限
-  maxConcurrentByProvider: { "google-web": 4, "deepl": 4, "openai-compatible": 16 }, // 各后端独立记忆（默认按服务类型推荐）
+  maxConcurrent: "", // 空 = 自动（跟随当前后端推荐值）；数字 = 固定并发（1-32）
   promptProfiles: DEFAULT_PROMPT_PROFILES, // LLM 提示词方案（面板可编辑/新建/重命名/删除）
   promptActive: 0, // 当前激活的方案索引
   // deepl

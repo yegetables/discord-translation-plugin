@@ -264,13 +264,23 @@
 
   /* ---------- 单条消息处理 ---------- */
 
-  // 翻译并发上限：按后端类型可调（在线服务 2-4，本地 LLM 8-16），设置面板可改
+  // 翻译并发上限：留空 = 自动（当前后端推荐值）；数字 = 固定值
   const JOB_QUEUE = new Map(); // hash -> job
   let activeJobs = 0;
 
+  const CONCURRENT_RECOMMENDED = {
+    "google-web": 4,
+    "deepl": 4,
+    "openai-compatible": 16
+  };
+
   function maxConcurrent() {
-    const n = settings && parseInt(settings.maxConcurrent, 10);
-    return Number.isFinite(n) && n >= 1 ? Math.min(n, 64) : 4;
+    const v = settings && settings.maxConcurrent;
+    if (v !== "" && v !== undefined && v !== null) {
+      const n = parseInt(v, 10);
+      if (Number.isFinite(n) && n >= 1) return Math.min(n, 64);
+    }
+    return CONCURRENT_RECOMMENDED[(settings && settings.provider) || "google-web"] || 4;
   }
 
   function startJob(job) {
