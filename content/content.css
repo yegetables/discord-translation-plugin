@@ -39,10 +39,10 @@
   border-left-color: var(--status-danger, #f23f42);
 }
 
-/* 仅译文模式：隐藏消息原文（保留占位避免布局跳动） */
+/* 仅译文模式：原文不占位（display:none），译文上移贴紧消息头部。
+   仅应用于已成功渲染译文的行（JS 控制），翻译中/失败的行始终显示原文 */
 .dt-replace [id^="message-content-"] {
-  opacity: 0 !important;
-  pointer-events: none !important;
+  display: none !important;
 }
 
 /* 输入框"翻译草稿"按钮：Discord 原生图标风格（透明背景、线性图标、hover 变亮） */

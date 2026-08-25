@@ -96,9 +96,14 @@
 
   /* ---------- 渲染 ---------- */
 
-  function applyDisplayMode(row) {
+  function applyDisplayMode(row, hasTranslation) {
     if (!settings) return;
-    row.classList.toggle("dt-replace", settings.showOriginal === false);
+    // 仅译文模式只对"已有成功译文"的行隐藏原文；
+    // 翻译中/失败/未翻译的行必须保持原文可见
+    row.classList.toggle(
+      "dt-replace",
+      settings.showOriginal === false && !!hasTranslation
+    );
   }
 
   // 插入锚点：优先放在 messageContent 包装层之后（避免进入 flex 容器被挤压变形）
@@ -113,25 +118,28 @@
     return inset;
   }
 
-  function renderTranslation(row, contentEl, translated, rowHash) {
+  function renderTranslation(row, contentEl, translated, rowHash, rawText) {
     if (!translated || !translated.trim().length) {
       const inset = insertInset(row, contentEl);
       inset.classList.add("dt-tl-error");
       inset.textContent = "⚠ 翻译结果为空";
+      applyDisplayMode(row, false);
       return;
     }
     const inset = insertInset(row, contentEl);
     inset.dataset.dt = hashStr(translated);
     inset.dataset.tag = "译文";
     inset.textContent = translated;
+    if (rawText) inset.title = "原文：" + rawText;
     if (rowHash) row.dataset.dtHash = rowHash;
-    applyDisplayMode(row);
+    applyDisplayMode(row, true);
   }
 
   function ensurePending(row, contentEl) {
     const inset = insertInset(row, contentEl);
     inset.classList.add("dt-tl-pending");
     inset.textContent = "…";
+    applyDisplayMode(row, false);
     return inset;
   }
 
@@ -152,7 +160,7 @@
 
     const cached = CACHE.get(hash);
     if (cached !== undefined) {
-      renderTranslation(row, contentEl, cached, hash);
+      renderTranslation(row, contentEl, cached, hash, text);
       return;
     }
     if (INFLIGHT.has(hash)) return;
@@ -178,6 +186,7 @@
             inset.textContent =
               "⚠ 翻译失败" + (r && r.error ? "：" + r.error : "");
           }
+          applyDisplayMode(row, false); // 失败时必须显示原文
         }
       });
     };
@@ -192,7 +201,7 @@
       if (!row) return;
       const key =
         (ce.id || row.getAttribute("data-list-item-id") || "") + "|" + extractText(ce);
-      if (hashStr(key) === hash) renderTranslation(row, ce, translated, hash);
+      if (hashStr(key) === hash) renderTranslation(row, ce, translated, hash, extractText(ce));
     });
   }
 
@@ -380,7 +389,15 @@
   /* ---------- 设置热更新 ---------- */
 
   function applySettingsAll() {
-    document.querySelectorAll(MESSAGE_SELECTOR).forEach(applyDisplayMode);
+    // 仅对"已有成功译文"的行应用仅译文模式；其余行显示原文
+    document.querySelectorAll(MESSAGE_SELECTOR).forEach((row) => {
+      const inset = row.querySelector(".dt-tl");
+      const hasTranslation =
+        !!inset &&
+        !inset.classList.contains("dt-tl-error") &&
+        !inset.classList.contains("dt-tl-pending");
+      applyDisplayMode(row, hasTranslation);
+    });
     if (settings) {
       if (!settings.outboxButton && outboxInjected) {
         const btn = document.querySelector(".dt-outbox-btn");
