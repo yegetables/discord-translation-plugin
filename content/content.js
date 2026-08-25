@@ -99,6 +99,48 @@
     return { text, codes };
   }
 
+  // DOM → 原样 markdown 文本（代码块 → ``` 围栏，inline code → `...`）。
+  // 供 openai-compatible 本地模型后端"原样发送"使用（LLM 按提示词保代码）。
+  function extractMarkdown(contentEl) {
+    const clone = contentEl.cloneNode(true);
+    clone.querySelectorAll('[class*="repliedMessage"]').forEach((n) => n.remove());
+    clone.querySelectorAll("pre").forEach((pre) => {
+      const fence = document.createElement("span");
+      fence.textContent = "\n```\n" + (pre.textContent || "") + "\n```\n";
+      pre.replaceWith(fence);
+    });
+    clone.querySelectorAll("code").forEach((c) => {
+      if (c.closest("pre")) return;
+      const fence = document.createElement("span");
+      fence.textContent = "`" + (c.textContent || "") + "`";
+      c.replaceWith(fence);
+    });
+    clone
+      .querySelectorAll('[class*="button"], [class*="emoji"], img, svg, [class*="actionRow"]')
+      .forEach((n) => n.remove());
+    // 克隆节点未入文档（innerText 不可用），递归重建文本并在块级元素间补换行
+    const domToText = (node) => {
+      let out = "";
+      node.childNodes.forEach((n) => {
+        if (n.nodeType === 3) out += n.textContent;
+        else if (n.nodeType === 1) {
+          const tag = n.tagName;
+          if (tag === "BR") out += "\n";
+          else if (tag === "DIV" || tag === "P") out += "\n" + domToText(n) + "\n";
+          else out += domToText(n);
+        }
+      });
+      return out;
+    };
+    let text = domToText(clone).replace(/\u00a0/g, " ");
+    return text
+      .split("\n")
+      .map((l) => l.replace(/[ \t]+/g, " ").trimEnd())
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
   function shouldTranslate(text) {
     if (!text) return false;
     const minLen = (settings && settings.minLen) || 2;
@@ -162,6 +204,24 @@
     });
   }
 
+  // LLM 原样模式：返回的译文含 ``` 代码块，分段渲染（文字 + 自绘代码块）
+  function renderMarkdownInto(inset, translated) {
+    inset.textContent = "";
+    const parts = translated.split(/```[a-zA-Z0-9_-]*\n?/);
+    parts.forEach((part, i) => {
+      if (!part) return;
+      if (i % 2 === 1) {
+        const pre = document.createElement("pre");
+        const code = document.createElement("code");
+        code.textContent = part.replace(/\n$/, "");
+        pre.appendChild(code);
+        inset.appendChild(pre);
+      } else {
+        inset.appendChild(document.createTextNode(part));
+      }
+    });
+  }
+
   function renderTranslation(row, contentEl, translated, rowHash, rawText, codes) {
     if (!translated || !translated.trim().length) {
       const inset = insertInset(row, contentEl);
@@ -173,7 +233,15 @@
     const inset = insertInset(row, contentEl);
     inset.dataset.dt = hashStr(translated);
     inset.dataset.tag = "译文";
-    renderTranslatedInto(inset, translated, codes || []);
+    if (codes) {
+      // 占位符模式（Google/DeepL）：按占位符回插原代码 DOM 克隆
+      renderTranslatedInto(inset, translated, codes);
+    } else if (translated.includes("```")) {
+      // LLM 原样模式：解析 ``` 围栏渲染代码块
+      renderMarkdownInto(inset, translated);
+    } else {
+      inset.textContent = translated;
+    }
     if (rawText) {
       inset.title =
         "原文：" + rawText.replace(/\[\[\s*DT\d+\s*\]\]/gi, "〔代码〕");
@@ -200,7 +268,17 @@
     if (!settings || !settings.enabled || !settings.translateIncoming) return;
     const contentEl = findMainContent(row);
     if (!contentEl) return; // 系统消息/纯引用等无正文
-    const { text, codes } = extractContent(contentEl);
+    // LLM 后端：原样 markdown 发送（代码块转 ``` 围栏），由模型自行判断保留；
+    // 其他后端（无提示词能力）：占位符方案防代码被翻坏
+    let text, codes;
+    if (settings.provider === "openai-compatible") {
+      text = extractMarkdown(contentEl);
+      codes = null;
+    } else {
+      const r = extractContent(contentEl);
+      text = r.text;
+      codes = r.codes;
+    }
     if (!shouldTranslate(text)) return;
 
     // 关键：以"行内当前内容"为 key。虚拟列表复用 DOM 节点渲染新消息、
@@ -246,11 +324,20 @@
 
   // 翻译完成后，把结果渲染到所有当前匹配该条消息的行（兼容虚拟滚动重建）
   function renderAllWithHash(hash, translated) {
+    const useRaw = settings && settings.provider === "openai-compatible";
     document.querySelectorAll(CONTENT_SELECTOR).forEach((ce) => {
       if (ce.closest(REPLY_CONTAINER)) return; // 跳过回复引用条内的预览元素
       const row = ce.closest(MESSAGE_SELECTOR);
       if (!row) return;
-      const { text: ceText, codes: ceCodes } = extractContent(ce);
+      let ceText, ceCodes;
+      if (useRaw) {
+        ceText = extractMarkdown(ce);
+        ceCodes = null;
+      } else {
+        const r = extractContent(ce);
+        ceText = r.text;
+        ceCodes = r.codes;
+      }
       const key =
         (ce.id || row.getAttribute("data-list-item-id") || "") + "|" + ceText;
       if (hashStr(key) === hash)
@@ -306,7 +393,14 @@
           return;
         }
         const mid = (el.id || "").replace("message-content-", "");
-        const translated = mid ? REPLY_CACHE.get(mid) : undefined;
+        const translatedRaw = mid ? REPLY_CACHE.get(mid) : undefined;
+        // 引用条是单行预览：LLM 译文里的 ``` 围栏剥掉只留内容
+        const translated = translatedRaw
+          ? translatedRaw
+              .replace(/```(?:[a-zA-Z0-9_-]*\n)?([\s\S]*?)```/g, "$1")
+              .replace(/`/g, "")
+              .trim()
+          : undefined;
         if (translated) {
           if (!el.dataset.dtOriginal) el.dataset.dtOriginal = el.textContent;
           if (el.textContent !== translated) {

@@ -82,7 +82,8 @@ section h2 {
 }
 select,
 input[type="text"],
-input[type="password"] {
+input[type="password"],
+textarea {
   width: 100%;
   padding: 5px 8px;
   border: 1px solid var(--border);
@@ -91,10 +92,24 @@ input[type="password"] {
   color: var(--fg);
   font-size: 13px;
 }
+textarea {
+  font: 12px/1.5 ui-monospace, Consolas, monospace;
+  resize: vertical;
+}
 select:focus,
-input:focus {
+input:focus,
+textarea:focus {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
+}
+.btn-group select {
+  flex: 1;
+  min-width: 0;
+}
+.btn-group {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
 }
 
 .radio-group {
@@ -180,10 +195,6 @@ input:focus {
   display: none;
 }
 
-.btn-group {
-  display: flex;
-  gap: 6px;
-}
 button.mini {
   flex: 1;
   padding: 4px 6px;

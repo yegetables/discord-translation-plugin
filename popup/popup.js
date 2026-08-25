@@ -55,7 +55,42 @@ function showProviderCfg() {
   }
 }
 
-/* ---------- 通用控件绑定（change 时只改内存态，Save 时统一提交） ---------- */
+/* ---- 提示词方案 ---- */
+function fillPromptProfiles() {
+  if (!Array.isArray(state.promptProfiles) || !state.promptProfiles.length) {
+    state.promptProfiles = [
+      { name: "沉浸式翻译", content: "Translate the text into {{to}}." }
+    ];
+    state.promptActive = 0;
+  }
+  if (
+    typeof state.promptActive !== "number" ||
+    state.promptActive < 0 ||
+    state.promptActive >= state.promptProfiles.length
+  ) {
+    state.promptActive = 0;
+  }
+  const sel = $("promptProfile");
+  sel.innerHTML = "";
+  state.promptProfiles.forEach((p, i) => {
+    const opt = document.createElement("option");
+    opt.value = String(i);
+    opt.textContent = p.name || "方案 " + (i + 1);
+    sel.appendChild(opt);
+  });
+  sel.value = String(state.promptActive);
+  loadPromptEditor();
+}
+
+function loadPromptEditor() {
+  const n = (state.promptProfiles || []).length;
+  let i = parseInt($("promptProfile").value, 10);
+  if (isNaN(i) || i < 0 || i >= n) i = 0;
+  const p = state.promptProfiles[i];
+  $("promptName").value = p ? p.name || "" : "";
+  $("promptContent").value = p ? p.content || "" : "";
+}
+
 function bind() {
   $("sw-enabled").checked = !!state.enabled;
 
@@ -108,6 +143,56 @@ function bind() {
   });
   $("oaApiKey").addEventListener("input", (e) => {
     state.oaApiKey = e.target.value;
+    markDirty();
+  });
+
+  /* ---- 提示词方案管理 ---- */
+  function activeProfileIdx() {
+    const n = (state.promptProfiles || []).length;
+    let i = parseInt($("promptProfile").value, 10);
+    if (isNaN(i) || i < 0 || i >= n) i = 0;
+    return i;
+  }
+  $("promptProfile").addEventListener("change", () => {
+    state.promptActive = activeProfileIdx();
+    loadPromptEditor();
+    markDirty();
+  });
+  $("promptName").addEventListener("input", (e) => {
+    const p = state.promptProfiles[activeProfileIdx()];
+    if (p) {
+      p.name = e.target.value;
+      $("promptProfile").selectedOptions[0].textContent =
+        p.name || "方案 " + (activeProfileIdx() + 1);
+      markDirty();
+    }
+  });
+  $("promptContent").addEventListener("input", (e) => {
+    const p = state.promptProfiles[activeProfileIdx()];
+    if (p) {
+      p.content = e.target.value;
+      markDirty();
+    }
+  });
+  $("promptNew").addEventListener("click", () => {
+    const cur = state.promptProfiles[activeProfileIdx()] || { name: "", content: "" };
+    state.promptProfiles.push({
+      name: (cur.name || "方案") + " 副本",
+      content: cur.content || ""
+    });
+    state.promptActive = state.promptProfiles.length - 1;
+    fillPromptProfiles();
+    markDirty();
+  });
+  $("promptDel").addEventListener("click", () => {
+    if (state.promptProfiles.length <= 1) {
+      $("saveState").textContent = "至少保留一个方案";
+      $("saveState").style.color = "var(--err)";
+      return;
+    }
+    state.promptProfiles.splice(activeProfileIdx(), 1);
+    state.promptActive = 0;
+    fillPromptProfiles();
     markDirty();
   });
 
@@ -168,6 +253,7 @@ function renderAll() {
   $("oaBaseUrl").value = state.oaBaseUrl || "";
   $("oaModel").value = state.oaModel || "";
   $("oaApiKey").value = state.oaApiKey || "";
+  fillPromptProfiles();
   $("saveState").textContent = "";
 }
 

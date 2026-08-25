@@ -91,7 +91,24 @@
               <button class="mini" data-base="http://localhost:11434/v1" data-model="qwen2.5:7b">Ollama</button>
             </div>
           </div>
-          <p class="hint">任选本地模型服务地址。远程自定义服务需在 manifest.json 的 host_permissions 对应域名。译文语言取自"目标语言"的中文名。</p>
+
+          <div class="row">
+            <label>提示词方案（{{to}} = 目标语言）</label>
+            <div class="btn-group">
+              <select id="promptProfile"></select>
+              <button class="mini" id="promptNew" title="以当前内容复制新建">新建</button>
+              <button class="mini" id="promptDel" title="删除当前方案">删除</button>
+            </div>
+          </div>
+          <div class="row">
+            <label for="promptName">方案名称</label>
+            <input type="text" id="promptName" />
+          </div>
+          <div class="row">
+            <label for="promptContent">提示词内容</label>
+            <textarea id="promptContent" rows="9" spellcheck="false"></textarea>
+          </div>
+          <p class="hint">切换方案立即生效；编辑自动保存。消息将以原样 markdown（含 ``` 代码块）发送，由模型按提示词自行判断保留内容。</p>
         </div>
       </section>
 
