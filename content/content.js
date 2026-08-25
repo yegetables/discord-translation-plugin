@@ -18,8 +18,50 @@
   const RETRIED = new Set(); // 已重试过的 hash（每条最多自动重试一次）
   let scanTimer = null;
   let outboxInjected = false;
+  let ctxDead = false; // 扩展被重载后旧 content script 的失效标记
+  let obs = null;
+  let scanIntervalId = null;
 
   /* ---------- 工具 ---------- */
+
+  // 扩展被重载（开发者模式点刷新/自动更新）后，旧页面上残留的
+  // content script 的 chrome.runtime 通道即失效，sendMessage 会抛
+  // "Extension context invalidated"。统一在此识别并优雅停机，
+  // 用户刷新页面后由新脚本接管，旧脚本不再产生任何报错。
+  function runtimeSend(msg) {
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.runtime.sendMessage(msg, (r) => {
+          const le = chrome.runtime.lastError;
+          if (le) {
+            if (/context invalidated/i.test(le.message || "")) shutdown();
+            return reject(new Error(le.message));
+          }
+          resolve(r);
+        });
+      } catch (e) {
+        if (/context invalidated/i.test(String((e && e.message) || e))) shutdown();
+        reject(e);
+      }
+    });
+  }
+
+  function shutdown() {
+    if (ctxDead) return;
+    ctxDead = true;
+    try {
+      obs && obs.disconnect();
+    } catch (_) {}
+    if (scanTimer) {
+      clearTimeout(scanTimer);
+      scanTimer = null;
+    }
+    if (scanIntervalId) {
+      clearInterval(scanIntervalId);
+      scanIntervalId = null;
+    }
+    toast("扩展已重载，请刷新页面（F5）恢复翻译", true);
+  }
 
   function hashStr(s) {
     let h = 5381;
@@ -29,10 +71,10 @@
 
   async function getSettings() {
     try {
-      const r = await chrome.runtime.sendMessage({ type: "GET_SETTINGS" });
+      const r = await runtimeSend({ type: "GET_SETTINGS" });
       if (r && r.ok) settings = r.settings;
     } catch (e) {
-      /* 扩展上下文失效等 */
+      /* 扩展上下文失效等：runtimeSend 内部已停机 */
     }
     return settings;
   }
@@ -290,42 +332,44 @@
     // burst 期间连 pending 占位框都不插（DOM 写入会干扰虚拟列表测量）
     if (!burstInProgress()) ensurePending(row, contentEl);
 
-    const attempt = (isRetry) => {
-      chrome.runtime.sendMessage({ type: "TRANSLATE", text }, (r) => {
-        INFLIGHT.delete(hash);
-        activeJobs--;
-        if (chrome.runtime.lastError) {
-          pumpQueue();
-          return;
+    const attempt = async (isRetry) => {
+      let r;
+      try {
+        r = await runtimeSend({ type: "TRANSLATE", text });
+      } catch (e) {
+        return; // 上下文失效已停机
+      }
+      INFLIGHT.delete(hash);
+      activeJobs--;
+      if (ctxDead) return;
+      if (r && r.ok && r.text) {
+        // 翻译结果无条件入缓存；渲染仅在非 burst 期执行，
+        // burst 中的积压译文由窗口结束后的 scan 统一渲染
+        CACHE.set(hash, r.text);
+        if (!burstInProgress()) {
+          renderAllWithHash(hash, r.text, contentEl.id);
         }
-        if (r && r.ok && r.text) {
-          // 翻译结果无条件入缓存；渲染仅在非 burst 期执行，
-          // burst 中的积压译文由窗口结束后的 scan 统一渲染
-          CACHE.set(hash, r.text);
-          if (!burstInProgress()) {
-            renderAllWithHash(hash, r.text, contentEl.id);
-          }
-        } else if (!isRetry && !RETRIED.has(hash)) {
-          // 失败自动重试一次（重新排队）
-          RETRIED.add(hash);
-          setTimeout(() => {
-            QUEUE.set(hash, job);
-            pumpQueue();
-          }, 1200);
-        } else {
-          if (!burstInProgress()) {
-            const inset = row.querySelector(".dt-tl");
-            if (inset && row.contains(inset)) {
-              inset.classList.remove("dt-tl-pending");
-              inset.classList.add("dt-tl-error");
-              inset.textContent =
-                "⚠ 翻译失败" + (r && r.error ? "：" + r.error : "");
-            }
-            applyDisplayMode(row, false); // 失败时必须显示原文
-          }
+      } else if (!isRetry && !RETRIED.has(hash)) {
+        // 失败自动重试一次（重新排队）
+        RETRIED.add(hash);
+        setTimeout(() => {
+          if (ctxDead) return;
+          QUEUE.set(hash, job);
           pumpQueue();
+        }, 1200);
+      } else {
+        if (!burstInProgress()) {
+          const inset = row.querySelector(".dt-tl");
+          if (inset && row.contains(inset)) {
+            inset.classList.remove("dt-tl-pending");
+            inset.classList.add("dt-tl-error");
+            inset.textContent =
+              "⚠ 翻译失败" + (r && r.error ? "：" + r.error : "");
+          }
+          applyDisplayMode(row, false); // 失败时必须显示原文
         }
-      });
+        pumpQueue();
+      }
     };
     attempt(false);
   }
@@ -427,19 +471,22 @@
     const text = (el.textContent || "").trim();
     if (!shouldTranslate(text)) return;
     REPLY_INFLIGHT.add(mid);
-    chrome.runtime.sendMessage(
-      { type: "TRANSLATE", text, targetLang: settings && settings.targetLang },
-      (r) => {
+    runtimeSend({
+      type: "TRANSLATE",
+      text,
+      targetLang: settings && settings.targetLang
+    })
+      .then((r) => {
         REPLY_INFLIGHT.delete(mid);
-        if (chrome.runtime.lastError) return;
+        if (ctxDead) return;
         if (r && r.ok && r.text) {
           REPLY_CACHE.set(mid, r.text);
           applyReplyTranslations();
         } else {
           REPLY_FAILED.add(mid);
         }
-      }
-    );
+      })
+      .catch(() => {});
   }
 
   function applyReplyTranslations() {
@@ -500,6 +547,7 @@
 
   function scan() {
     scanTimer = null;
+    if (ctxDead) return;
     if (!settings || !settings.enabled || !settings.translateIncoming) return;
     if (burstInProgress()) {
       scheduleScan(1200); // 加载风暴中：推迟，零干扰
@@ -518,7 +566,11 @@
   }
 
   function startObserver() {
-    const obs = new MutationObserver((muts) => {
+    obs = new MutationObserver((muts) => {
+      if (ctxDead) {
+        obs.disconnect();
+        return;
+      }
       let addedRows = 0;
       let interesting = false;
       for (const m of muts) {
@@ -588,7 +640,7 @@
     if (!raw) return toast("输入框是空的", true);
     if (btn) btn.classList.add("dt-busy");
     try {
-      const r = await chrome.runtime.sendMessage({
+      const r = await runtimeSend({
         type: "TRANSLATE",
         text: raw,
         targetLang: settings && settings.outboxTargetLang
@@ -724,12 +776,15 @@
 
   (async function init() {
     await getSettings();
+    if (ctxDead) return;
     startObserver();
     applySettingsAll();
     scan();
     startOutboxRetry();
 
     // Discord SPA 路由切换后重新挂载
-    setInterval(scan, 4000);
+    scanIntervalId = setInterval(() => {
+      if (!ctxDead) scan();
+    }, 4000);
   })();
 })();
