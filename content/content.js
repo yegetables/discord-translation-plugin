@@ -237,50 +237,27 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // 从 React fiber 定位 Discord 的 Slate editor 实例
-  // （实测确认：fiber 上溯数层 props.editor 即编辑器，getSlate() 返回同一实例）
-  function findSlateEditor(tb) {
-    const fiberKey = Object.keys(tb).find((k) => k.startsWith("__reactFiber$"));
-    if (!fiberKey) return null;
-    let f = tb[fiberKey];
-    for (let i = 0; i < 20 && f; i++) {
-      const e = f.memoizedProps && f.memoizedProps.editor;
-      if (e && typeof e.insertText === "function" && "children" in e && "selection" in e) {
-        return e;
-      }
-      f = f.return;
-    }
-    return null;
-  }
-
-  // Slate 原生替换（人工控制台验证通过的通道）：
-  // apply(set_selection) → deleteFragment → insertText
-  // 关键：选区必须走 editor.apply() 操作流；直接赋值 editor.selection 会
-  // 绕过 Discord 的状态管理导致编辑器冻结+草稿存储污染（v0.1.8 教训）
-  function slateReplaceAll(editor, text) {
-    const leaves = [];
-    const walk = (node, path = []) => {
-      if (typeof node.text === "string") {
-        leaves.push({ path, text: node.text });
-        return;
-      }
-      (node.children || []).forEach((c, i) => walk(c, path.concat(i)));
-    };
-    (editor.children || []).forEach((c, i) => walk(c, [i]));
-    if (!leaves.length) return false;
-    const first = leaves[0];
-    const last = leaves[leaves.length - 1];
-    editor.apply({
-      type: "set_selection",
-      properties: editor.selection,
-      newProperties: {
-        anchor: { path: first.path, offset: 0 },
-        focus: { path: last.path, offset: last.text.length }
-      }
+  // React fiber 只在页面世界可见（content script 隔离世界看不到 expando 属性），
+  // Slate 定位/替换由 MAIN world 的 page-slate.js 执行，这里通过 DOM 事件通信。
+  function requestDraftReplace(text) {
+    return new Promise((resolve) => {
+      const reqId = "dt" + Date.now() + Math.random().toString(36).slice(2);
+      const onResult = (e) => {
+        if (!e.detail || e.detail.reqId !== reqId) return;
+        document.removeEventListener(RES_EVENT, onResult);
+        resolve(e.detail);
+      };
+      const RES_EVENT = "DT_REPLACE_RESULT";
+      document.addEventListener(RES_EVENT, onResult);
+      document.dispatchEvent(
+        new CustomEvent("DT_REPLACE_DRAFT", { detail: { text, reqId } })
+      );
+      // 页面脚本未注入/无响应保护
+      setTimeout(() => {
+        document.removeEventListener(RES_EVENT, onResult);
+        resolve({ ok: false, error: "页面脚本无响应（请刷新页面重试）" });
+      }, 3000);
     });
-    if (last.text.length > 0) editor.deleteFragment();
-    editor.insertText(text);
-    return true;
   }
 
   function composerText(tb) {
@@ -310,17 +287,9 @@
         return toast("翻译失败：" + ((r && r.error) || "未知错误"), true);
       }
 
-      const editor = findSlateEditor(tb);
-      if (!editor) {
-        return toast(
-          "替换失败：未定位到 Discord 编辑器实例（界面结构可能已更新，请反馈）",
-          true
-        );
-      }
-      try {
-        slateReplaceAll(editor, r.text);
-      } catch (e) {
-        return toast("Slate 替换失败：" + ((e && e.message) || e), true);
+      const res = await requestDraftReplace(r.text);
+      if (!res.ok) {
+        return toast("替换失败：" + (res.error || "未知原因"), true);
       }
 
       await sleep(60);
