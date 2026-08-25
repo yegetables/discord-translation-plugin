@@ -264,17 +264,21 @@
 
   /* ---------- 单条消息处理 ---------- */
 
-  // 翻译并发上限 + FIFO 队列：跳转/批量加载时避免请求风暴
-  // （Google 限流、本地 LLM 过载），也避免逐条完成的 DOM 持续扰动
-  const MAX_CONCURRENT = 4;
+  // 翻译并发上限：按后端类型可调（在线服务 2-4，本地 LLM 8-16），设置面板可改
   const JOB_QUEUE = new Map(); // hash -> job
   let activeJobs = 0;
+
+  function maxConcurrent() {
+    const n = settings && parseInt(settings.maxConcurrent, 10);
+    return Number.isFinite(n) && n >= 1 ? Math.min(n, 64) : 4;
+  }
 
   function startJob(job) {
     const { row, contentEl, text, codes, hash } = job;
     activeJobs++;
     INFLIGHT.add(hash);
-    ensurePending(row, contentEl);
+    // burst 期间连 pending 占位框都不插（DOM 写入会干扰虚拟列表测量）
+    if (!burstInProgress()) ensurePending(row, contentEl);
 
     const attempt = (isRetry) => {
       chrome.runtime.sendMessage({ type: "TRANSLATE", text }, (r) => {
@@ -285,8 +289,12 @@
           return;
         }
         if (r && r.ok && r.text) {
+          // 翻译结果无条件入缓存；渲染仅在非 burst 期执行，
+          // burst 中的积压译文由窗口结束后的 scan 统一渲染
           CACHE.set(hash, r.text);
-          renderAllWithHash(hash, r.text, contentEl.id);
+          if (!burstInProgress()) {
+            renderAllWithHash(hash, r.text, contentEl.id);
+          }
         } else if (!isRetry && !RETRIED.has(hash)) {
           // 失败自动重试一次（重新排队）
           RETRIED.add(hash);
@@ -295,14 +303,16 @@
             pumpQueue();
           }, 1200);
         } else {
-          const inset = row.querySelector(".dt-tl");
-          if (inset && row.contains(inset)) {
-            inset.classList.remove("dt-tl-pending");
-            inset.classList.add("dt-tl-error");
-            inset.textContent =
-              "⚠ 翻译失败" + (r && r.error ? "：" + r.error : "");
+          if (!burstInProgress()) {
+            const inset = row.querySelector(".dt-tl");
+            if (inset && row.contains(inset)) {
+              inset.classList.remove("dt-tl-pending");
+              inset.classList.add("dt-tl-error");
+              inset.textContent =
+                "⚠ 翻译失败" + (r && r.error ? "：" + r.error : "");
+            }
+            applyDisplayMode(row, false); // 失败时必须显示原文
           }
-          applyDisplayMode(row, false); // 失败时必须显示原文
           pumpQueue();
         }
       });
@@ -312,7 +322,7 @@
 
   function pumpQueue() {
     for (const [hash, job] of JOB_QUEUE) {
-      if (activeJobs >= MAX_CONCURRENT) break;
+      if (activeJobs >= maxConcurrent()) break;
       JOB_QUEUE.delete(hash);
       startJob(job);
     }
@@ -343,12 +353,15 @@
 
     const cached = CACHE.get(hash);
     if (cached !== undefined) {
-      renderTranslation(row, contentEl, cached, hash, text, codes);
+      // burst 期间只入缓存不渲染（不设 dtHash，窗口结束后的 scan 统一渲染）
+      if (!burstInProgress()) {
+        renderTranslation(row, contentEl, cached, hash, text, codes);
+      }
       return;
     }
     if (INFLIGHT.has(hash)) return;
     const job = { row, contentEl, text, codes, hash };
-    if (activeJobs >= MAX_CONCURRENT) {
+    if (activeJobs >= maxConcurrent()) {
       JOB_QUEUE.set(hash, job); // 排队，完成回调/scan 驱动
       return;
     }
@@ -467,6 +480,7 @@
     burstTimer = setTimeout(() => {
       burstCount = 0;
       burstTimer = null;
+      scheduleScan(50); // 窗口结束：立即渲染积压的译文
     }, BURST_WINDOW_MS);
   }
 
