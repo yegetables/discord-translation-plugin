@@ -8,6 +8,7 @@ const DEFAULT_SETTINGS = {
   showOriginal: true, // true=双语对照, false=仅译文(隐藏原文)
   translateIncoming: true,
   outboxButton: true, // 在输入框显示"翻译草稿"按钮
+  outboxTargetLang: "en", // 发送框草稿翻译的目标语言（与接收翻译的 targetLang 相互独立）
   minLen: 2, // 低于此长度不翻译（v0.1.1 由 minLength:3 改名并调低，旧值自动失效）
   // deepl
   deeplApiKey: "",
@@ -60,7 +61,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             sendResponse({ ok: false, error: "扩展未启用" });
             break;
           }
-          const r = await doTranslate(msg.text, s);
+          // msg.targetLang 可选覆盖：发送框草稿用独立目标语言
+          const eff = msg.targetLang ? { ...s, targetLang: msg.targetLang } : s;
+          const r = await doTranslate(msg.text, eff);
           sendResponse(r);
           break;
         }

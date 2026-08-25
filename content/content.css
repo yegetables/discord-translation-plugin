@@ -45,37 +45,43 @@
   pointer-events: none !important;
 }
 
-/* 输入框"翻译草稿"按钮：始终半可见，hover 高亮 */
+/* 输入框"翻译草稿"按钮：Discord 原生图标风格（透明背景、线性图标、hover 变亮） */
 .dt-composer-host {
   position: relative !important;
 }
 .dt-outbox-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 4px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  flex: none;
+  color: var(--interactive-normal, #b5bac1);
+  background: transparent;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.dt-outbox-btn:hover {
+  color: var(--interactive-active, #fff);
+  background: var(--background-modifier-hover, rgba(255, 255, 255, 0.06));
+}
+.dt-outbox-btn svg {
+  width: 24px;
+  height: 24px;
+  display: block;
+}
+.dt-outbox-btn.dt-busy svg {
+  animation: dt-spin 0.9s linear infinite;
+}
+/* 兜底：未能并入原生按钮组时，绝对定位在输入区右上角（仅限 host 直接子元素） */
+.dt-composer-host > .dt-outbox-btn {
   position: absolute;
   z-index: 1000;
   right: 10px;
   top: 4px;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 22px;
-  text-align: center;
-  color: var(--interactive-normal, #b5bac1);
-  background: var(--background-secondary, #2b2d31);
-  opacity: 0.55;
-  transition: opacity 0.15s ease, background 0.15s ease;
-}
-.dt-outbox-btn:hover {
-  opacity: 1;
-  background: var(--background-secondary-alt, #232428);
-  color: var(--interactive-active, #fff);
-}
-.dt-outbox-btn.dt-busy {
-  opacity: 1;
-  animation: dt-spin 0.9s linear infinite;
 }
 @keyframes dt-spin {
   to {

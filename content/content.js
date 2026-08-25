@@ -229,7 +229,11 @@
     if (!raw) return toast("输入框是空的", true);
     if (btn) btn.classList.add("dt-busy");
     try {
-      const r = await chrome.runtime.sendMessage({ type: "TRANSLATE", text: raw });
+      const r = await chrome.runtime.sendMessage({
+        type: "TRANSLATE",
+        text: raw,
+        targetLang: settings && settings.outboxTargetLang
+      });
       if (r && r.ok && r.text) {
         tb.focus();
         // execCommand 会触发 input 事件，Discord(slate/React) 才能把新文本同步进发送状态
@@ -250,6 +254,10 @@
   let outboxKeybound = false;
   let outboxProbeStarted = false;
 
+  // Feather "globe" 线性图标（MIT），与 Discord 原生 gift/gif/贴纸图标风格一致
+  const GLOBE_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>';
+
   function injectOutboxButton() {
     if (!settings || !settings.outboxButton) return;
     if (document.querySelector(".dt-outbox-btn")) {
@@ -264,14 +272,21 @@
       (tb.parentElement && tb.parentElement.parentElement) ||
       tb.parentElement;
     if (!host) return;
-    host.classList.add("dt-composer-host");
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "dt-outbox-btn";
-    btn.title = "翻译输入框内容为目标语言（快捷键 Alt+T）";
-    btn.textContent = "🌐";
+    btn.title = "翻译输入框内容（快捷键 Alt+T）";
+    btn.innerHTML = GLOBE_SVG;
     btn.addEventListener("click", () => translateDraft(btn));
-    host.appendChild(btn);
+
+    // 优先并入原生图标按钮组（gift/gif/贴纸/emoji…），观感与原生完全一致
+    const group = host.querySelector('[class*="buttons"]');
+    if (group && !tb.contains(group)) {
+      group.insertBefore(btn, group.firstChild);
+    } else {
+      host.classList.add("dt-composer-host");
+      host.appendChild(btn);
+    }
     outboxInjected = true;
 
     // 快捷键只注册一次（频道切换重注入时不能叠加监听器）

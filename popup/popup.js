@@ -10,16 +10,22 @@ const initResult = await chrome.runtime.sendMessage({ type: "GET_SETTINGS" });
 state = initResult && initResult.ok ? initResult.settings : {};
 
 /* ---------- 语言下拉 ---------- */
-function fillLangs() {
-  const sel = $("targetLang");
+function fillLangSelect(sel, includeAuto) {
   sel.innerHTML = "";
   for (const [code, [zh, en]] of sortedLangEntries()) {
+    if (!includeAuto && code === "auto") continue; // 草稿翻译目标不能是"自动检测"
     const opt = document.createElement("option");
     opt.value = code;
     opt.textContent = zh + " · " + en;
     sel.appendChild(opt);
   }
-  sel.value = state.targetLang || DEFAULT_TARGET;
+}
+
+function fillLangs() {
+  fillLangSelect($("targetLang"), true);
+  $("targetLang").value = state.targetLang || DEFAULT_TARGET;
+  fillLangSelect($("outboxTargetLang"), false);
+  $("outboxTargetLang").value = state.outboxTargetLang || "en";
 }
 
 /* ---------- 后端下拉 ---------- */
@@ -55,6 +61,10 @@ function bind() {
 
   $("targetLang").addEventListener("change", (e) => {
     state.targetLang = e.target.value;
+    markDirty();
+  });
+  $("outboxTargetLang").addEventListener("change", (e) => {
+    state.outboxTargetLang = e.target.value;
     markDirty();
   });
   $("provider").addEventListener("change", (e) => {
@@ -146,6 +156,7 @@ async function resetAll() {
 function renderAll() {
   $("sw-enabled").checked = !!state.enabled;
   $("targetLang").value = state.targetLang || DEFAULT_TARGET;
+  $("outboxTargetLang").value = state.outboxTargetLang || "en";
   const ro = state.showOriginal !== false ? "1" : "0";
   document.querySelector(`input[name="showOriginal"][value="${ro}"]`).checked = true;
   $("chk-incoming").checked = !!state.translateIncoming;
