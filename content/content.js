@@ -281,6 +281,53 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // 从 React fiber 定位 Discord 的 Slate editor 实例
+  // （诊断确认：fiber 上溯数层内 props.editor 即编辑器，含 children/selection/insertText）
+  function findSlateEditor(tb) {
+    const fiberKey = Object.keys(tb).find((k) => k.startsWith("__reactFiber$"));
+    if (!fiberKey) return null;
+    let f = tb[fiberKey];
+    for (let i = 0; i < 20 && f; i++) {
+      const e = f.memoizedProps && f.memoizedProps.editor;
+      if (e && typeof e.insertText === "function" && "children" in e && "selection" in e) {
+        return e;
+      }
+      f = f.return;
+    }
+    return null;
+  }
+
+  // Slate 原生 API：全选并替换（状态天然同步，编辑器保持可编辑）
+  function slateReplaceAll(editor, text) {
+    const findFirst = (node, path) => {
+      if (typeof node.text === "string") return { path, offset: 0 };
+      for (let i = 0; i < node.children.length; i++) {
+        const r = findFirst(node.children[i], path.concat(i));
+        if (r) return r;
+      }
+      return null;
+    };
+    const findLast = (node, path) => {
+      if (typeof node.text === "string") return { path, offset: node.text.length };
+      for (let i = node.children.length - 1; i >= 0; i--) {
+        const r = findLast(node.children[i], path.concat(i));
+        if (r) return r;
+      }
+      return null;
+    };
+    if (!editor.children || !editor.children.length) return false;
+    const first = findFirst(editor.children[0], [0]);
+    const last = findLast(editor.children[editor.children.length - 1], [editor.children.length - 1]);
+    if (!first || !last) return false;
+    editor.selection = {
+      anchor: { path: first.path, offset: first.offset },
+      focus: { path: last.path, offset: last.offset }
+    };
+    editor.deleteFragment();
+    editor.insertText(text);
+    return true;
+  }
+
   function pasteIntoComposer(tb, text) {
     try {
       const dt = new DataTransfer();
@@ -324,7 +371,18 @@
 
   async function replaceComposerText(tb, raw, text) {
     tb.focus();
-    // 第 1 步：选中全部 → 等一拍让 selectionchange 派发、Slate 同步内部选区 → paste 替换
+    // 首选：Slate editor 原生 API（Discord 同款编辑通道，状态天然同步）
+    const editor = findSlateEditor(tb);
+    if (editor) {
+      try {
+        if (slateReplaceAll(editor, text)) {
+          await sleep(60);
+          if (composerIsPure(tb, raw, text)) return { ok: true };
+        }
+      } catch (_) { /* 落入降级链 */ }
+    }
+
+    // 降级 1：选中全部 → 等一拍让 selectionchange 派发、Slate 同步内部选区 → paste 替换
     selectAllInComposer(tb);
     await sleep(0);
     if (!pasteIntoComposer(tb, text)) {
@@ -336,7 +394,7 @@
     await sleep(80);
     if (composerIsPure(tb, raw, text)) return { ok: true };
 
-    // 第 2 步（降级）：显式"全选 → 删除 → 粘贴"，确保只剩译文
+    // 降级 2：显式"全选 → 删除 → 粘贴"，确保只剩译文
     selectAllInComposer(tb);
     await sleep(0);
     document.execCommand("delete");
