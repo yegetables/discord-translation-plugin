@@ -222,6 +222,78 @@
     return document.querySelector('div[role="textbox"][contenteditable="true"]');
   }
 
+  async function copyText(t) {
+    try {
+      await navigator.clipboard.writeText(t);
+      return true;
+    } catch (_) {}
+    // 兜底：隐藏 textarea + execCommand
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = t;
+      ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function selectAllInComposer(tb) {
+    // 精确选中 Slate 首个→最后一个非空文本节点（避开零宽占位节点）
+    const sel = window.getSelection();
+    const range = document.createRange();
+    const walker = document.createTreeWalker(tb, NodeFilter.SHOW_TEXT);
+    let first = null,
+      last = null,
+      n;
+    while ((n = walker.nextNode())) {
+      if (n.textContent && n.textContent.trim().length) {
+        if (!first) first = n;
+        last = n;
+      }
+    }
+    if (first && last) {
+      range.setStart(first, 0);
+      range.setEnd(last, last.textContent.length);
+    } else {
+      range.selectNodeContents(tb);
+    }
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  function replaceComposerText(tb, text) {
+    tb.focus();
+    selectAllInComposer(tb);
+    // 走 paste 事件路径：Slate/React 以"用户输入"方式同步内部状态，编辑器保持可编辑
+    try {
+      const dt = new DataTransfer();
+      dt.setData("text/plain", text);
+      tb.dispatchEvent(
+        new ClipboardEvent("paste", {
+          bubbles: true,
+          cancelable: true,
+          clipboardData: dt
+        })
+      );
+    } catch (_) {
+      selectAllInComposer(tb);
+      document.execCommand("insertText", false, text);
+      return;
+    }
+    // Slate 渲染是异步的：稍后校验是否真的替换成功
+    setTimeout(() => {
+      const now = tb.innerText || "";
+      if (!now.includes(text.slice(0, Math.min(20, text.length)))) {
+        toast("自动替换未生效，译文已复制到剪贴板，请 Ctrl+V 粘贴", true);
+      }
+    }, 80);
+  }
+
   async function translateDraft(btn) {
     const tb = findTextbox();
     if (!tb) return toast("未找到输入框", true);
@@ -235,12 +307,9 @@
         targetLang: settings && settings.outboxTargetLang
       });
       if (r && r.ok && r.text) {
-        tb.focus();
-        // execCommand 会触发 input 事件，Discord(slate/React) 才能把新文本同步进发送状态
-        let ok = document.execCommand("selectAll", false, null);
-        ok = document.execCommand("insertText", false, r.text) && ok;
-        if (!ok) tb.innerText = r.text; // 兜底
-        toast("已替换为译文，确认后发送");
+        await copyText(r.text); // 静默安全网：万一替换失败可直接 Ctrl+V
+        replaceComposerText(tb, r.text);
+        toast("✓ 输入框已替换为译文，可继续编辑后发送");
       } else {
         toast("翻译失败：" + (r && r.error ? r.error : "未知错误"), true);
       }

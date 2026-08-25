@@ -69,8 +69,8 @@
   background: var(--background-modifier-hover, rgba(255, 255, 255, 0.06));
 }
 .dt-outbox-btn svg {
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  height: 20px;
   display: block;
 }
 .dt-outbox-btn.dt-busy svg {
