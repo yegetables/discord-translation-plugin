@@ -13,6 +13,7 @@
 
   let settings = null;
   const CACHE = new Map(); // hash(text) -> 译文
+  const REPLY_CACHE = new Map(); // 消息id -> 译文（供引用条替换，仅译文模式）
   const INFLIGHT = new Set(); // hash(text) 正在翻译
   const RETRIED = new Set(); // 已重试过的 hash（每条最多自动重试一次）
   let scanTimer = null;
@@ -132,6 +133,10 @@
     inset.textContent = translated;
     if (rawText) inset.title = "原文：" + rawText;
     if (rowHash) row.dataset.dtHash = rowHash;
+    // 记录 消息id -> 译文：引用条预览与正文共用同一消息 id，
+    // 仅译文模式下引用条可据此替换为译文
+    const mid = (contentEl.id || "").replace("message-content-", "");
+    if (mid) REPLY_CACHE.set(mid, translated);
     applyDisplayMode(row, true);
   }
 
@@ -205,6 +210,30 @@
     });
   }
 
+  // 仅译文模式：引用条预览替换为被引消息的译文（若已翻译过）；
+  // 双语模式或无译文缓存时恢复原文
+  function applyReplyTranslations() {
+    const replaceMode =
+      settings && settings.enabled && settings.showOriginal === false;
+    document
+      .querySelectorAll('[class*="repliedMessage"] [id^="message-content-"]')
+      .forEach((el) => {
+        const mid = (el.id || "").replace("message-content-", "");
+        const translated = replaceMode ? REPLY_CACHE.get(mid) : undefined;
+        if (translated) {
+          if (!el.dataset.dtOriginal) el.dataset.dtOriginal = el.textContent;
+          if (el.textContent !== translated) {
+            el.textContent = translated;
+            el.title = "原文：" + el.dataset.dtOriginal;
+          }
+        } else if (el.dataset.dtOriginal) {
+          el.textContent = el.dataset.dtOriginal;
+          el.removeAttribute("title");
+          delete el.dataset.dtOriginal;
+        }
+      });
+  }
+
   /* ---------- 扫描 & 观察者 ---------- */
 
   function scan() {
@@ -213,6 +242,7 @@
     document.querySelectorAll(MESSAGE_SELECTOR).forEach((row) => {
       processRow(row);
     });
+    applyReplyTranslations();
   }
 
   function scheduleScan() {
@@ -398,6 +428,7 @@
         !inset.classList.contains("dt-tl-pending");
       applyDisplayMode(row, hasTranslation);
     });
+    applyReplyTranslations();
     if (settings) {
       if (!settings.outboxButton && outboxInjected) {
         const btn = document.querySelector(".dt-outbox-btn");
