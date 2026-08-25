@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "Discord 翻译 · Discord Translator (open source)",
+  "short_name": "DT-Plug",
+  "version": "0.1.0",
+  "description": "开源 Discord 消息自动翻译扩展：接收/发送消息双向自动翻译，100+ 语言，可插拔翻译后端（Google Web / DeepL / 本地大模型）。非官方，独立开发。",
+  "minimum_chrome_version": "102",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://translate.googleapis.com/*",
+    "https://translate.google.com/*",
+    "https://api-free.deepl.com/*",
+    "https://api.deepl.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "http://[::1]/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://discord.com/*",
+        "https://*.discord.com/*",
+        "https://ptb.discord.com/*",
+        "https://canary.discord.com/*"
+      ],
+      "js": ["content/content.js"],
+      "css": ["content/content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Discord 翻译",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

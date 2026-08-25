@@ -1,0 +1,12 @@
+{
+  "name": "discord-translation-plugs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open-source Discord Web translation browser extension (MV3, pluggable backends)",
+  "type": "module",
+  "scripts": {
+    "check": "node --check background.js && node --check lib/translator.js && node --check lib/lang.js && node --check lib/providers/google-web.js && node --check lib/providers/deepl.js && node --check lib/providers/openai-compatible.js && node --check content/content.js && node --check popup/popup.js",
+    "icons": "pwsh -NoProfile -File scripts/make-icons.ps1"
+  },
+  "license": "MIT"
+}

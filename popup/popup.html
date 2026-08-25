@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Discord 翻译</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="hd">
+      <div class="hd-title">
+        <span class="logo">🌐</span>
+        <div>
+          <h1>Discord 翻译</h1>
+          <p class="sub">open source · 非官方</p>
+        </div>
+      </div>
+      <label class="switch" title="总开关">
+        <input type="checkbox" id="sw-enabled" />
+        <span class="slider"></span>
+      </label>
+    </header>
+
+    <main>
+      <!-- 常规 -->
+      <section>
+        <h2>常规</h2>
+        <div class="row">
+          <label for="targetLang">翻译成（目标语言）</label>
+          <select id="targetLang"></select>
+        </div>
+        <div class="row">
+          <label>显示方式</label>
+          <div class="radio-group" id="displayMode">
+            <label><input type="radio" name="showOriginal" value="1" /> 双语对照</label>
+            <label><input type="radio" name="showOriginal" value="0" /> 仅译文</label>
+          </div>
+        </div>
+        <label class="check"><input type="checkbox" id="chk-incoming" /> 自动翻译收到的消息</label>
+        <label class="check"><input type="checkbox" id="chk-outbox" /> 在输入框显示"翻译草稿"按钮</label>
+      </section>
+
+      <!-- 后端 -->
+      <section>
+        <h2>翻译后端</h2>
+        <div class="row">
+          <label for="provider">引擎</label>
+          <select id="provider"></select>
+        </div>
+
+        <div id="cfg-google-web" class="provider-cfg">
+          <p class="hint">免费 Web 接口，无需配置，开箱即用。<span class="warn">发送的文本会经 Google 处理</span>。</p>
+        </div>
+
+        <div id="cfg-deepl" class="provider-cfg hidden">
+          <div class="row">
+            <label for="deeplApiKey">DeepL API Key</label>
+            <input type="password" id="deeplApiKey" placeholder="xxxxxxxx-xxxx-..." autocomplete="off" />
+          </div>
+          <div class="row">
+            <label>账号类型</label>
+            <div class="radio-group" id="deeplPlan">
+              <label><input type="radio" name="deeplPlan" value="free" /> 免费版</label>
+              <label><input type="radio" name="deeplPlan" value="pro" /> 专业版</label>
+            </div>
+          </div>
+          <p class="hint">注册：<a href="https://www.deepl.com/pro-api" target="_blank">deepl.com/pro-api</a>（免费 50 万字/月）</p>
+        </div>
+
+        <div id="cfg-openai-compatible" class="provider-cfg hidden">
+          <div class="row">
+            <label for="oaBaseUrl">Base URL</label>
+            <input type="text" id="oaBaseUrl" placeholder="http://localhost:1234/v1" />
+          </div>
+          <div class="row">
+            <label for="oaModel">模型名</label>
+            <input type="text" id="oaModel" placeholder="gpt-4o-mini" />
+          </div>
+          <div class="row">
+            <label for="oaApiKey">API Key（可空）</label>
+            <input type="password" id="oaApiKey" placeholder="本地可留空" autocomplete="off" />
+          </div>
+          <div class="row">
+            <label>快捷填充</label>
+            <div class="btn-group">
+              <button class="mini" data-base="http://localhost:1234/v1" data-model="qwen2.5:7b">LM Studio</button>
+              <button class="mini" data-base="http://localhost:11434/v1" data-model="qwen2.5:7b">Ollama</button>
+            </div>
+          </div>
+          <p class="hint">任选本地模型服务地址。远程自定义服务需在 manifest.json 的 host_permissions 对应域名。译文语言取自"目标语言"的中文名。</p>
+        </div>
+      </section>
+
+      <!-- 测试 -->
+      <section>
+        <h2>测试</h2>
+        <div class="row">
+          <button id="btn-test" class="primary">测试翻译</button>
+          <span id="testResult" class="test-result"></span>
+        </div>
+        <p class="hint">测试文本：Hello world. Nice to meet you! 👋</p>
+      </section>
+    </main>
+
+    <footer>
+      <button id="btn-reset" class="ghost">恢复默认</button>
+      <span id="saveState" class="save-state"></span>
+    </footer>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

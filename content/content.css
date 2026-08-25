@@ -1,0 +1,109 @@
+/* Discord 翻译 · 渲染样式（注入 discord.com） */
+
+/* 译文气泡：跟随 Discord 主题变量，深浅色自动适配 */
+.dt-tl {
+  margin: 2px 0 4px 0;
+  padding: 2px 10px 2px 12px;
+  font-size: 0.8125em;
+  line-height: 1.4;
+  color: var(--text-normal, rgba(220, 221, 222, 0.92));
+  border-left: 3px solid var(--brand-500, #5865f2);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--background-secondary, #2b2d31) 60%, transparent);
+  user-select: text;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.dt-tl::before {
+  content: attr(data-tag);
+  display: block;
+  font-size: 0.7em;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  opacity: 0.55;
+  margin-bottom: 1px;
+}
+.dt-tl-pending {
+  opacity: 0.45;
+  font-style: italic;
+}
+.dt-tl-pending::before {
+  content: "● 翻译中";
+}
+.dt-tl-error {
+  color: var(--status-danger, #f23f42);
+  border-left-color: var(--status-danger, #f23f42);
+}
+
+/* 仅译文模式：隐藏消息原文（保留占位避免布局跳动） */
+.dt-replace [id^="message-content-"] {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* 输入框"翻译草稿"按钮 */
+.dt-outbox-btn {
+  position: absolute;
+  z-index: 1000;
+  right: 10px;
+  top: 8px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 24px;
+  text-align: center;
+  color: var(--interactive-normal, #b5bac1);
+  background: var(--background-secondary, #2b2d31);
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+.dt-outbox-btn:hover {
+  opacity: 1;
+  background: var(--background-secondary-alt, #232428);
+  color: var(--interactive-active, #fff);
+}
+.dt-outbox-btn.dt-busy {
+  opacity: 1;
+  animation: dt-spin 0.9s linear infinite;
+}
+@keyframes dt-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 提示 toast */
+.dt-toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 99999;
+  max-width: 320px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #fff;
+  background: var(--background-floating, #18191c);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  animation: dt-fade 0.2s ease;
+}
+.dt-toast.dt-toast-err {
+  background: #da373c;
+}
+.dt-toast.dt-toast-ok {
+  background: #23a55a;
+}
+@keyframes dt-fade {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
