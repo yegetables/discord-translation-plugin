@@ -281,6 +281,52 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // 从 React fiber 定位 Discord 的 Slate editor 实例
+  // （实测确认：fiber 上溯数层 props.editor 即编辑器，getSlate() 返回同一实例）
+  function findSlateEditor(tb) {
+    const fiberKey = Object.keys(tb).find((k) => k.startsWith("__reactFiber$"));
+    if (!fiberKey) return null;
+    let f = tb[fiberKey];
+    for (let i = 0; i < 20 && f; i++) {
+      const e = f.memoizedProps && f.memoizedProps.editor;
+      if (e && typeof e.insertText === "function" && "children" in e && "selection" in e) {
+        return e;
+      }
+      f = f.return;
+    }
+    return null;
+  }
+
+  // Slate 原生替换（人工控制台验证通过的通道）：
+  // apply(set_selection) → deleteFragment → insertText
+  // 关键：选区必须走 editor.apply() 操作流；直接赋值 editor.selection 会
+  // 绕过 Discord 的状态管理导致编辑器冻结+草稿存储污染（v0.1.8 教训）
+  function slateReplaceAll(editor, text) {
+    const leaves = [];
+    const walk = (node, path = []) => {
+      if (typeof node.text === "string") {
+        leaves.push({ path, text: node.text });
+        return;
+      }
+      (node.children || []).forEach((c, i) => walk(c, path.concat(i)));
+    };
+    (editor.children || []).forEach((c, i) => walk(c, [i]));
+    if (!leaves.length) return false;
+    const first = leaves[0];
+    const last = leaves[leaves.length - 1];
+    editor.apply({
+      type: "set_selection",
+      properties: editor.selection,
+      newProperties: {
+        anchor: { path: first.path, offset: 0 },
+        focus: { path: last.path, offset: last.text.length }
+      }
+    });
+    if (last.text.length > 0) editor.deleteFragment();
+    editor.insertText(text);
+    return true;
+  }
+
   function pasteIntoComposer(tb, text) {
     try {
       const dt = new DataTransfer();
@@ -321,14 +367,25 @@
 
   async function replaceComposerText(tb, raw, text) {
     tb.focus();
-    // 唯一路径：全选 → 让拍同步 Slate 内部选区 → paste → 安静轮询等待。
-    // 不做任何删除/改写操作（execCommand delete / 直接改 DOM 都会把
-    // Discord 的编辑器+草稿存储状态搞坏），失败时保持输入框原样。
+    // 首选：Slate 原生 API（人工验证过的安全通道）。
+    // 一旦进入 Slate 层，失败也不混用 DOM hack（避免状态雪崩）。
+    const editor = findSlateEditor(tb);
+    if (editor) {
+      try {
+        if (slateReplaceAll(editor, text)) {
+          await sleep(60);
+          return { ok: composerIsPure(tb, raw, text) };
+        }
+        return { ok: false };
+      } catch (_) {
+        return { ok: false };
+      }
+    }
+    // 降级（仅 editor 定位失败时）：paste 路径 + 轮询
     selectAllInComposer(tb);
     await sleep(0);
     if (!pasteIntoComposer(tb, text)) return { ok: false };
-    if (await waitForComposerPure(tb, raw, text)) return { ok: true };
-    return { ok: false };
+    return { ok: await waitForComposerPure(tb, raw, text) };
   }
 
   async function translateDraft(btn) {
@@ -347,7 +404,7 @@
         await copyText(r.text); // 静默安全网：万一替换失败可直接 Ctrl+V
         const res = await replaceComposerText(tb, raw, r.text);
         if (res.ok) toast("✓ 输入框已替换为译文，可继续编辑后发送");
-        else toast("自动替换未生效（输入框未改动）。译文已复制，请手动全选后 Ctrl+V", true);
+        else toast("自动替换结果异常，请检查输入框（译文已复制剪贴板）", true);
       } else {
         toast("翻译失败：" + (r && r.error ? r.error : "未知错误"), true);
       }
