@@ -298,6 +298,30 @@
     }
   }
 
+  function composerText(tb) {
+    return (tb.innerText || tb.textContent || "").trim();
+  }
+
+  function composerIsPure(tb, raw, text) {
+    const now = composerText(tb);
+    const textHead = text.slice(0, Math.min(20, text.length));
+    const rawHead = raw.slice(0, Math.min(15, raw.length));
+    return now.includes(textHead) && !now.includes(rawHead);
+  }
+
+  // 任何路径失败都不能丢用户文本：恢复原文
+  async function restoreComposer(tb, raw) {
+    selectAllInComposer(tb);
+    await sleep(0);
+    if (!pasteIntoComposer(tb, raw)) {
+      document.execCommand("insertText", false, raw);
+    }
+    await sleep(80);
+    if (!composerText(tb).includes(raw.slice(0, Math.min(20, raw.length)))) {
+      tb.innerText = raw; // 最后兜底
+    }
+  }
+
   async function replaceComposerText(tb, raw, text) {
     tb.focus();
     // 第 1 步：选中全部 → 等一拍让 selectionchange 派发、Slate 同步内部选区 → paste 替换
@@ -306,14 +330,11 @@
     if (!pasteIntoComposer(tb, text)) {
       selectAllInComposer(tb);
       document.execCommand("insertText", false, text);
-      return;
+      return composerIsPure(tb, raw, text) ? { ok: true } : (await restoreComposer(tb, raw), { ok: false });
     }
     // 校验：应为纯译文（含译文开头、不再含原文开头）
     await sleep(80);
-    const now = (tb.innerText || "").trim();
-    const textHead = text.slice(0, Math.min(20, text.length));
-    const rawHead = raw.slice(0, Math.min(15, raw.length));
-    if (now.includes(textHead) && !now.includes(rawHead)) return;
+    if (composerIsPure(tb, raw, text)) return { ok: true };
 
     // 第 2 步（降级）：显式"全选 → 删除 → 粘贴"，确保只剩译文
     selectAllInComposer(tb);
@@ -323,12 +344,18 @@
     if (!pasteIntoComposer(tb, text)) {
       document.execCommand("insertText", false, text);
     }
+    await sleep(80);
+    if (composerIsPure(tb, raw, text)) return { ok: true };
+
+    // 全部失败：恢复原文，绝不留空框
+    await restoreComposer(tb, raw);
+    return { ok: false };
   }
 
   async function translateDraft(btn) {
     const tb = findTextbox();
     if (!tb) return toast("未找到输入框", true);
-    const raw = (tb.innerText || tb.textContent || "").trim();
+    const raw = composerText(tb);
     if (!raw) return toast("输入框是空的", true);
     if (btn) btn.classList.add("dt-busy");
     try {
@@ -339,8 +366,9 @@
       });
       if (r && r.ok && r.text) {
         await copyText(r.text); // 静默安全网：万一替换失败可直接 Ctrl+V
-        await replaceComposerText(tb, raw, r.text);
-        toast("✓ 输入框已替换为译文，可继续编辑后发送");
+        const res = await replaceComposerText(tb, raw, r.text);
+        if (res.ok) toast("✓ 输入框已替换为译文，可继续编辑后发送");
+        else toast("自动替换未生效（已恢复原文）。译文已复制，可 Ctrl+V 粘贴", true);
       } else {
         toast("翻译失败：" + (r && r.error ? r.error : "未知错误"), true);
       }
