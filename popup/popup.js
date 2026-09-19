@@ -100,20 +100,25 @@ function loadPromptEditor() {
 
 function bind() {
   $("sw-enabled").checked = !!state.enabled;
+  // 总开关：必须绑事件，否则只改变勾选外观、设置从未写入
+  $("sw-enabled").addEventListener("change", (e) => {
+    state.enabled = e.target.checked;
+    markDirty(true); // 离散控件立即保存（关弹窗不丢）
+  });
 
   $("targetLang").addEventListener("change", (e) => {
     state.targetLang = e.target.value;
-    markDirty();
+    markDirty(true);
   });
   $("outboxTargetLang").addEventListener("change", (e) => {
     state.outboxTargetLang = e.target.value;
-    markDirty();
+    markDirty(true);
   });
   $("provider").addEventListener("change", (e) => {
     state.provider = e.target.value;
     updateConcurrencyPlaceholder();
     showProviderCfg();
-    markDirty();
+    markDirty(true);
   });
   $("maxConcurrent").addEventListener("input", (e) => {
     const raw = e.target.value.trim();
@@ -131,16 +136,16 @@ function bind() {
   document.querySelectorAll('input[name="showOriginal"]').forEach((r) => {
     r.addEventListener("change", () => {
       state.showOriginal = document.querySelector('input[name="showOriginal"]:checked').value === "1";
-      markDirty();
+      markDirty(true);
     });
   });
   $("chk-incoming").addEventListener("change", (e) => {
     state.translateIncoming = e.target.checked;
-    markDirty();
+    markDirty(true);
   });
   $("chk-outbox").addEventListener("change", (e) => {
     state.outboxButton = e.target.checked;
-    markDirty();
+    markDirty(true);
   });
 
   $("deeplApiKey").addEventListener("input", (e) => {
@@ -150,7 +155,7 @@ function bind() {
   document.querySelectorAll('input[name="deeplPlan"]').forEach((r) =>
     r.addEventListener("change", () => {
       state.deeplPlan = document.querySelector('input[name="deeplPlan"]:checked').value;
-      markDirty();
+      markDirty(true);
     })
   );
 
@@ -177,7 +182,7 @@ function bind() {
   $("promptProfile").addEventListener("change", () => {
     state.promptActive = activeProfileIdx();
     loadPromptEditor();
-    markDirty();
+    markDirty(true);
   });
   $("promptName").addEventListener("input", (e) => {
     const p = state.promptProfiles[activeProfileIdx()];
@@ -203,7 +208,7 @@ function bind() {
     });
     state.promptActive = state.promptProfiles.length - 1;
     fillPromptProfiles();
-    markDirty();
+    markDirty(true);
   });
   $("promptDel").addEventListener("click", () => {
     if (state.promptProfiles.length <= 1) {
@@ -214,7 +219,7 @@ function bind() {
     state.promptProfiles.splice(activeProfileIdx(), 1);
     state.promptActive = 0;
     fillPromptProfiles();
-    markDirty();
+    markDirty(true);
   });
 
   document.querySelectorAll(".btn-group .mini").forEach((b) =>
@@ -223,7 +228,7 @@ function bind() {
       $("oaModel").value = b.dataset.model;
       state.oaBaseUrl = b.dataset.base;
       state.oaModel = b.dataset.model;
-      markDirty();
+      markDirty(true);
     })
   );
 
@@ -231,17 +236,37 @@ function bind() {
   $("btn-reset").addEventListener("click", resetAll);
 }
 
-function markDirty() {
+let saveTimer = null;
+let dirty = false;
+
+// immediate=true 用于离散控件（开关/下拉/单选/按钮）：立刻落盘，避免
+// 用户改完马上关掉弹窗导致延迟保存被取消（历史 bug：总开关失效）
+function markDirty(immediate) {
+  dirty = true;
   $("saveState").textContent = "未保存";
   $("saveState").style.color = "var(--err)";
-  scheduleSave();
+  if (immediate) return void flush();
+  if (saveTimer) return;
+  saveTimer = setTimeout(flush, 600);
 }
 
-let saveTimer = null;
-function scheduleSave() {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(save, 600);
+function flush() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  if (!dirty) return;
+  dirty = false;
+  return save();
 }
+
+// 弹窗关闭前兜底落盘；输入框失焦（focusout 会冒泡）也立即落盘
+window.addEventListener("pagehide", () => {
+  void flush();
+});
+document.addEventListener("focusout", () => {
+  void flush();
+});
 
 async function save() {
   const r = await chrome.runtime.sendMessage({ type: "SET_SETTINGS", patch: state });

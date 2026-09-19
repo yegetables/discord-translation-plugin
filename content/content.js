@@ -791,6 +791,24 @@
   /* ---------- 设置热更新 ---------- */
 
   function applySettingsAll() {
+    // 总开关关闭：清掉所有译文与仅译文隐藏，让"关闭"有明确效果
+    // （译文仍在 CACHE 中，重新开启时缓存命中即时恢复）
+    if (settings && !settings.enabled) {
+      document.querySelectorAll(MESSAGE_SELECTOR).forEach((row) => {
+        row.querySelectorAll(".dt-tl").forEach((n) => n.remove());
+        row.classList.remove("dt-replace");
+        delete row.dataset.dtHash;
+      });
+      document
+        .querySelectorAll('[class*="repliedMessage"] [id^="message-content-"]')
+        .forEach(restoreReplyBar);
+      if (outboxInjected) {
+        const btn = document.querySelector(".dt-outbox-btn");
+        if (btn) btn.remove();
+        outboxInjected = false;
+      }
+      return;
+    }
     // 仅对"已有成功译文"的行应用仅译文模式；其余行显示原文
     document.querySelectorAll(MESSAGE_SELECTOR).forEach((row) => {
       const inset = row.querySelector(".dt-tl");

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Discord 翻译 · Discord Translator (open source)",
   "short_name": "DT-Plug",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "开源 Discord 消息自动翻译扩展：接收/发送消息双向自动翻译，100+ 语言，可插拔翻译后端（Google Web / DeepL / 本地大模型）。非官方，独立开发。",
   "minimum_chrome_version": "111",
   "permissions": ["storage"],
