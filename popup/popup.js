@@ -171,8 +171,10 @@ function bind() {
     state.oaApiKey = e.target.value;
     markDirty();
   });
+  $("chk-oa-remove-origin").addEventListener("change", toggleRemoveOrigin);
 
-  /* ---- 提示词方案管理 ---- */
+
+/* ---- 提示词方案管理 ---- */
   function activeProfileIdx() {
     const n = (state.promptProfiles || []).length;
     let i = parseInt($("promptProfile").value, 10);
@@ -223,12 +225,13 @@ function bind() {
   });
 
   document.querySelectorAll(".btn-group .mini").forEach((b) =>
-    b.addEventListener("click", () => {
+    b.addEventListener("click", async () => {
       $("oaBaseUrl").value = b.dataset.base;
       $("oaModel").value = b.dataset.model;
       state.oaBaseUrl = b.dataset.base;
       state.oaModel = b.dataset.model;
       markDirty(true);
+      await ensureHostPermission(b.dataset.base);
     })
   );
 
@@ -301,25 +304,83 @@ function renderAll() {
   $("oaBaseUrl").value = state.oaBaseUrl || "";
   $("oaModel").value = state.oaModel || "";
   $("oaApiKey").value = state.oaApiKey || "";
+  $("chk-oa-remove-origin").checked = !!state.oaRemoveOrigin;
   fillPromptProfiles();
   $("saveState").textContent = "";
+}
+
+/* ---------- 自定义端点域名授权 + Origin 移除 ---------- */
+// MV3：不在 host_permissions 里的域名，fetch 会走 CORS（预检被拒就 Failed to fetch）。
+// 这里从 Base URL 提取域名，用户输入什么就动态放行什么，授权一次永久生效。
+// （模块顶层函数，bind() 和 testTranslate() 共用；本地地址无需授权直接放行）
+async function ensureHostPermission(baseUrl) {
+  let origin = null;
+  try {
+    const u = new URL((baseUrl || "").trim());
+    // 本地地址已被 host_permissions 的 localhost/127.0.0.1/[::1] 条目覆盖（match pattern 不含端口 = 匹配任意端口），无需申请
+    if (/^(localhost|127\.0\.0\.1|\[::1\])$/.test(u.hostname)) return { granted: true, origin: null };
+    if (u.protocol === "http:" || u.protocol === "https:") origin = u.origin + "/*";
+  } catch {
+    // URL 无效交给测试按钮去报真正的错误
+  }
+  if (!origin) return { granted: true, origin: null };
+  try {
+    // 直接 request：已授权时静默返回 true，不重复弹框
+    const granted = await chrome.permissions.request({ origins: [origin] });
+    return { granted, origin };
+  } catch (e) {
+    console.error("[DT] 域名授权失败", origin, e);
+    return { granted: false, origin, error: String((e && e.message) || e) };
+  }
+}
+
+function toggleRemoveOrigin(e) {
+  state.oaRemoveOrigin = e.target.checked;
+  markDirty(true);
 }
 
 /* ---------- 测试翻译 ---------- */
 async function testTranslate() {
   const btn = $("btn-test");
   const out = $("testResult");
+  const step = (txt, err) => {
+    out.textContent = txt;
+    out.className = "test-result" + (err ? " err" : "");
+  };
   btn.disabled = true;
-  out.textContent = "翻译中…";
-  out.className = "test-result";
-  const r = await chrome.runtime.sendMessage({ type: "TRANSLATE", text: "Hello world. Nice to meet you! 👋" });
-  btn.disabled = false;
-  if (r && r.ok) {
-    out.textContent = r.text;
-    out.classList.add("ok");
-  } else {
-    out.textContent = "失败：" + (r && r.error ? r.error : "未知");
-    out.classList.add("err");
+  try {
+    // 1. 显式保存：平时输入靠 600ms 防抖落盘，点测试时可能还没写进 storage，
+    //    不先保存后台就会拿旧 Base URL/Key 去测
+    step("保存设置…");
+    const sr = await chrome.runtime.sendMessage({ type: "SET_SETTINGS", patch: state });
+    if (sr && sr.ok) {
+      state = sr.settings;
+      $("saveState").textContent = "✓ 已保存";
+      $("saveState").style.color = "var(--ok)";
+    } else {
+      step("设置保存失败，用旧配置继续测试", true);
+    }
+
+    // 2. 域名授权：远程端点没有 host 权限会被 CORS 预检拦下（Failed to fetch）
+    const perm = await ensureHostPermission(state.oaBaseUrl);
+    if (!perm.granted) {
+      step("域名授权失败 " + (perm.origin || "") + "：" + (perm.error || "浏览器未弹出授权框"), true);
+      return;
+    }
+    step(perm.origin ? "已授权 " + perm.origin + "，翻译中…" : "翻译中…");
+
+    // 3. 真实翻译请求
+    const r = await chrome.runtime.sendMessage({ type: "TRANSLATE", text: "Hello world. Nice to meet you! 👋" });
+    if (r && r.ok) {
+      step(r.text);
+      out.classList.add("ok");
+    } else {
+      step("失败：" + (r && r.error ? r.error : "未知"), true);
+    }
+  } catch (e) {
+    step("测试异常：" + String((e && e.message) || e), true);
+  } finally {
+    btn.disabled = false;
   }
 }
 

@@ -69,13 +69,14 @@ manifest.json
 |---|---|---|
 | `google-web`（默认） | 无 | translate.googleapis.com 免费接口，开箱即用；**原文会发送给 Google** |
 | `deepl` | DeepL API Key | 免费版 50 万字/月，支持免费/专业端点切换 |
-| `openai-compatible` | 本地模型或兼容服务 | 默认 `http://localhost:1234/v1`（LM Studio）/ `:11434/v1`（Ollama），消息不出本机；远程服务需在 `manifest.json` 的 `host_permissions` 加域名 |
+| `openai-compatible` | 本地模型或兼容服务 | 默认 `http://localhost:1234/v1`（LM Studio）/ `:11434/v1`（Ollama），消息不出本机；填远程地址后首次测试会弹一次域名授权（输入什么域名放行什么域名，授权后绕过 CORS）；网关拒绝扩展来源时勾选「移除 Origin 请求头」（网络层 DNR 实现） |
 
 ### 新增一个后端
 
 1. `lib/providers/` 新建 `xxx.js`，导出 `META`（id/label/desc）与 `translate({ text, targetLang, config, langName })`
 2. `lib/translator.js` 的 `PROVIDERS` 注册
 3. 按需在 `manifest.json` 的 `host_permissions` 加域名、`popup/` 加配置项
+   （openai-compatible 后端已支持运行时动态授权，新后端可复用 popup.js 的 `ensureHostPermission`）
 
 ## 开发
 

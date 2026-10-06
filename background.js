@@ -1,6 +1,7 @@
 // background service worker：设置缓存 + 翻译请求转发
 import { translate as doTranslate } from "./lib/translator.js";
 import { DEFAULT_PROMPT_PROFILES } from "./lib/providers/openai-compatible.js";
+import { syncOriginHeaderRule } from "./lib/requestHeaders.js";
 
 const DEFAULT_SETTINGS = {
   enabled: true,
@@ -20,7 +21,8 @@ const DEFAULT_SETTINGS = {
   // openai compatible
   oaBaseUrl: "http://localhost:1234/v1",
   oaModel: "gpt-4o-mini",
-  oaApiKey: ""
+  oaApiKey: "",
+  oaRemoveOrigin: false // 网络层移除发往 Base URL 域名的 Origin 头（网关拒绝扩展来源时启用）
 };
 
 let settings = null;
@@ -32,11 +34,23 @@ async function getSettings() {
   return settings;
 }
 
+// 按 Base URL 同步「移除 Origin」DNR 规则；仅 openai-compatible 且开关开启时安装
+async function applyHeaderRule(s) {
+  try {
+    await syncOriginHeaderRule(s.oaBaseUrl, s.provider === "openai-compatible" && s.oaRemoveOrigin);
+  } catch (e) {
+    console.error("[DT] Origin 移除规则同步失败", e);
+  }
+}
+
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "sync" && changes.dtSettings) {
     settings = { ...DEFAULT_SETTINGS, ...(changes.dtSettings.newValue || {}) };
+    void applyHeaderRule(settings);
   }
 });
+
+void getSettings().then(applyHeaderRule);
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
